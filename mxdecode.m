@@ -1,22 +1,28 @@
 %MXDECODE   Deserialize data from a byte array.
 %   V = MXDECODE(BUF) decodes the original value V from uint8 array BUF.
 %
-%   See also MXENCODE, TYPECAST.
+%   V = MXDECODE(BUF,VERSION) uses the specified VERSION to identify a valid
+%   buffer and determine the correct byte order for decoding.
+%
+%   See also MXENCODE.
 
 %   Written by Maxim Khitrov (January 2017)
 
-function v = mxdecode(buf)  %#codegen
-	vers = uint16(42);
+function v = mxdecode(buf, vers)  %#codegen
+	narginchk(1, 2);
 	swap = false;
 	n = uint32(numel(buf));
 	if n == 0 || bitand(n,3) ~= 0 || ~isa(buf,'uint8') || ~isreal(buf) || ...
-			~iscolumn(buf)
+			~iscolumn(buf) || buf(1) == buf(2)
 		v = fail('invalidBuf', 'invalid buffer');
 		return;
 	end
+	if nargin < 2
+		vers = uint16(42);
+	end
 	switch typecast(buf(1:2), 'uint16')
-	case vers
-	case swapbytes(vers)
+	case uint16(vers)
+	case swapbytes(uint16(vers))
 		swap = true;
 	otherwise
 		v = fail('invalidFormat', 'invalid buffer format');
@@ -107,25 +113,19 @@ function [v,pos] = decCell(buf, pos, swap, n)
 end
 
 function [v,pos] = decStruct(buf, pos, swap, n)
-	[nf,pos] = decNumeric(buf, pos, swap, uint32(2), 'uint16');
-	if isempty(nf)
+	[fields,pos] = decNext(buf, pos, swap);
+	if isempty(fields) || ~iscell(fields)
 		v = struct([]);
 		return;
 	end
-	fieldvals = cell(1, 2*nf);
-	for i = 1:2:numel(fieldvals)
-		[field,pos] = decNext(buf, pos, swap);
-		if isempty(field)
-			pos = intmax('uint32');
-			v = struct([]);
-			return;
-		end
+	fieldvals = cell(1, 2*numel(fields));
+	fieldvals(1:2:numel(fieldvals)) = fields;
+	for i = 2:2:numel(fieldvals)
 		vals = cell(n, 1);
 		for j = 1:n
 			[vals{j},pos] = decNext(buf, pos, swap);
 		end
-		fieldvals{i} = field;
-		fieldvals{i+1} = vals;
+		fieldvals{i} = vals;
 	end
 	v = struct(fieldvals{:});
 end
@@ -175,7 +175,7 @@ function [i,j,pos] = consume(buf, pos, n)
 	i = pos;
 	j = pos + n - 1;
 	pos = pos + n;
-	if isempty(j) || j >= numel(buf)
+	if j >= numel(buf)  % TODO: isempty(n) possible?
 		i = uint32(1);
 		j = uint32(0);
 		pos = intmax('uint32');

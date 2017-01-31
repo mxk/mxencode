@@ -3,9 +3,14 @@
 %   logical, char, cell, struct, sparse, or any combination thereof, into a
 %   uint8 array. Use MXDECODE to extract the original value from BUF.
 %
-%   BUF = MXENCODE(V,BYTEORDER) where BYTEORDER is one of 'B', 'L', or 'N' to
-%   use big-endian, little-endian, or native byte ordering, respectively. The
-%   default is native.
+%   BUF = MXENCODE(V,BYTEORDER) encodes V using the specified BYTEORDER, which
+%   must be one of 'B', 'L', or 'N' for big-endian, little-endian, or native
+%   byte order, respectively. The default is native.
+%
+%   BUF = MXENCODE(V,BYTEORDER,VERSION) encodes the specified VERSION into the
+%   first two bytes of BUF. VERSION must be a valid uint16 value with distinct
+%   high and low bytes to enable byte order detection. The default version is
+%   the answer to the ultimate question of life, the universe, and everything.
 %
 %   MXENCODE and MXDECODE were written primarily for use with MATLAB Coder to
 %   serve as an efficient data exchange format between MATLAB and non-MATLAB
@@ -15,8 +20,8 @@
 %
 %   BUF format (FIELD(#BYTES)): [ VERSION(2) VALUE(1-N) PAD(1-4) ]
 %
-%   VERSION is incremented for all backward-incompatible changes to the encoding
-%   format. The current version is 42. This is also serves as a byte order mark.
+%   VERSION allows the decoder to identify a valid buffer and to determine the
+%   byte ordering that was used for encoding.
 %
 %   VALUE is a recursive encoding of V based on its class. The first byte is a
 %   tag in which the lower 5 bits specify the class and the upper 3 bits specify
@@ -37,35 +42,32 @@
 %   Limits:
 %      Maximum number of array dimensions: 255
 %      Maximum number of array elements: 4,294,967,295
-%      Maximum number of struct fields: 65,535
 %      Maximum buffer size: 4,294,967,292
 %
-%   See also MXDECODE, TYPECAST.
+%   See also MXDECODE, TYPECAST, COMPUTER.
 
 %   Written by Maxim Khitrov (January 2017)
 
-function buf = mxencode(v, byteOrder)  %#codegen
-	vers = uint16(42);
-	swap = false;
-	if nargin == 2
-		isBigEndian = (typecast(uint8([0 1]),'uint16') == 1);
-		switch byteOrder
-		case 'B'
-			swap = ~isBigEndian;
-		case 'L'
-			swap = isBigEndian;
-		case 'N'
-		otherwise
-			buf = fail('invalidByteOrder', 'invalid byte order spec');
-			return;
-		end
+function buf = mxencode(v, byteOrder, vers)  %#codegen
+	narginchk(1, 3);
+	if nargin < 2 || strcmp(byteOrder,'N')
+		swap = false;
+	else
+		byteOrder = validatestring(byteOrder, {'N','B','L'}, 2);
+		native = char(bitand(typecast(uint8('LB'),'uint16'), 255));
+		swap = ~(strcmp(byteOrder,'N') || strcmp(byteOrder,native));
+	end
+	if nargin < 3
+		vers = uint16(42);
 	end
 	buf = zeros(64, 1, 'uint8');
-	if swap
-		vers = swapbytes(vers);
+	coder.varsize('buf');
+	[buf,len] = appendAny(buf, uint32(0), swap, uint16(vers));
+	if buf(1) == buf(2)
+		buf = fail('invalidVersion', 'invalid version value');
+		return;
 	end
-	buf(1:2) = typecast(vers, 'uint8')';
-	[buf,len] = encAny(buf, uint32(2), swap, v);
+	[buf,len] = encAny(buf, len, swap, v);
 	pad = uint8(4 - bitand(len,3));
 	[buf,len] = append(buf, len, repmat(bitcmp(pad),pad,1));
 	if ~isempty(buf)
@@ -146,15 +148,13 @@ end
 
 function [buf,len] = encStruct(buf, len, swap, v)
 	fields = fieldnames(v);
-	if numel(fields) > intmax('uint16')
-		buf = fail('fieldCount', 'struct field count exceeds uint16 range');
-		return;
+	if isempty(fields)
+		fields = reshape(fields, 0, 0);
 	end
 	[buf,len] = encTag(buf, len, swap, v, 'struct');
-	[buf,len] = appendAny(buf, len, swap, uint16(numel(fields)));
+	[buf,len] = encCell(buf, len, swap, fields);
 	for i = 1:numel(fields)
 		field = fields{i};
-		[buf,len] = encChar(buf, len, swap, field);
 		for j = 1:numel(v)
 			[buf,len] = encAny(buf, len, swap, v(j).(field));
 		end
@@ -237,5 +237,5 @@ function buf = fail(id, msg)
 	if coder.target('MATLAB')
 		error(['mxencode:' id], msg);
 	end
-	buf = uint8([]);
+	buf = reshape(uint8([]), 0, 1);
 end

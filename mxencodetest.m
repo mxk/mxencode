@@ -144,28 +144,34 @@ end
 
 function testStruct(tc)
 	v = struct();
-	veq(tc, v, 1+2);
+	veq(tc, v, 1 + 1);
+
+	v = struct([]);
+	veq(tc, v, 1 + 1);
 
 	v = struct('a',1);
-	veq(tc, v, 1+2 + 1+1+1+8);
+	veq(tc, v, 1 + 1+1+1 + 1+8);
 
 	v = struct('a',1,'b',2);
-	veq(tc, v, 1+2 + 1+1+1+8 + 1+1+1+8);
+	veq(tc, v, 1 + 1+1+1+1+1+1 + 1+8+1+8);
 
 	v = struct('abc',struct('xyz',{}));
-	veq(tc, v, 1+2 + 1+1+3 + 1+2 + 1+1+3);
+	veq(tc, v, 1 + 1+1+1+3 + 1 + 1+1+1+3);
 
 	v = struct('abc',struct('xyz',{{}}));
-	veq(tc, v, 1+2 + 1+1+3 + 1+2 + 1+1+3 + 1);
+	veq(tc, v, 1 + 1+1+1+3 + 1 + 1+1+1+3 + 1);
 
 	v = struct('a',{{1}},'b',2);
-	veq(tc, v, 1+2 + 1+1+1+1+8 + 1+1+1+8);
+	veq(tc, v, 1 + 1+1+1+1+1+1 + 1+1+8 + 1+8);
 
 	v = struct('a',{1,2},'b',{2,[]});
-	veq(tc, v, 1+1+2 + 1+1+1+8+1+8 + 1+1+1+8+1);
+	veq(tc, v, 1+1 + 1+1+1+1+1+1 + 1+8+1+8 + 1+8+1);
 
 	v = struct('a',{1,2},'b',{2,[]},'f2',{struct(),[1,2]});
-	veq(tc, v, 1+1+2 + 1+1+1+8+1+8 + 1+1+1+8+1 + 1+1+2+1+2+1+1+2*8);
+	veq(tc, v, 1+1 + 1+1+1+1+1+1+1+1+2 + 1+8+1+8 + 1+8+1 + 1+1+1+1+2*8);
+
+	v = struct('a',{[],1;2,[]},'bc',{3,[];[],{4,struct('x',[])}});
+	veq(tc, v, 1+2 + 1+1+1+1+1+1+2 + 1+1+8+1+8+1 + 1+8+1+1 + 1+1+1+8+1+1+1+1+1);
 end
 
 function testByteOrder(tc)
@@ -191,19 +197,18 @@ function testByteOrder(tc)
 end
 
 function testError(tc)
-	tc.verifyError(@() mxencode([],'X'), 'mxencode:invalidByteOrder');
+	tc.verifyError(@() mxencode([],'X'), 'MATLAB:unrecognizedStringChoice');
+	tc.verifyError(@() mxencode([],'N',0), 'mxencode:invalidVersion');
+
 	encErr(tc, @(x) x, 'unsupported');
 	encErr(tc, sparse(4294967296,1,1), 'numelRange');
-
-	kv = sprintfc('f%d', 1:2*65536);
-	encErr(tc, struct(kv{:}), 'fieldCount');
-
 	encErr(tc, reshape([], 0:255), 'ndimsRange');
 	encErr(tc, sparse(65536,65536), 'numelRange');
-	%encErr(tc, zeros(536870912,1), 'overflow');
+	%encErr(tc, zeros(536870911,1), 'overflow');
 
 	decErr(tc, uint8([]), 'invalidBuf');
-	decErr(tc, uint8([0;0;0;0]), 'invalidFormat');
+	decErr(tc, uint8([0;0;0;0]), 'invalidBuf');
+	decErr(tc, uint8([0;1;0;0]), 'invalidFormat');
 
 	buf = mxencode('abc');
 	buf(4) = 255;
