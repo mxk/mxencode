@@ -3,6 +3,10 @@
 %   logical, char, cell, struct, sparse, or any combination thereof, into a
 %   uint8 array. Use MXDECODE to extract the original value from BUF.
 %
+%   BUF = MXENCODE(V,BYTEORDER) where BYTEORDER is one of 'B', 'L', or 'N' to
+%   use big-endian, little-endian, or native byte ordering, respectively. The
+%   default is native.
+%
 %   MXENCODE and MXDECODE were written primarily for use with MATLAB Coder to
 %   serve as an efficient data exchange format between MATLAB and non-MATLAB
 %   code. Since MATLAB Coder does not support sparse matrices as of R2016b, any
@@ -12,9 +16,7 @@
 %   BUF format (FIELD(#BYTES)): [ VERSION(2) VALUE(1-N) PAD(1-4) ]
 %
 %   VERSION is incremented for all backward-incompatible changes to the encoding
-%   format. The current version is 42. This is also a byte order mark, with the
-%   upper byte always set to 0. All fields are encoded using the native byte
-%   order. MXDECODE does not support decoding non-native BUFs.
+%   format. The current version is 42. This is also serves as a byte order mark.
 %
 %   VALUE is a recursive encoding of V based on its class. The first byte is a
 %   tag in which the lower 5 bits specify the class and the upper 3 bits specify
@@ -36,61 +38,81 @@
 %      Maximum number of array dimensions: 255
 %      Maximum number of array elements: 4,294,967,295
 %      Maximum number of struct fields: 65,535
-%      Maximum buffer size: 4,294,967,294
+%      Maximum buffer size: 4,294,967,292
 %
 %   See also MXDECODE, TYPECAST.
 
 %   Written by Maxim Khitrov (January 2017)
 
-function buf = mxencode(v)  %#codegen
+function buf = mxencode(v, byteOrder)  %#codegen
+	vers = uint16(42);
+	swap = false;
+	if nargin == 2
+		isBigEndian = (typecast(uint8([0 1]),'uint16') == 1);
+		switch byteOrder
+		case 'B'
+			swap = ~isBigEndian;
+		case 'L'
+			swap = isBigEndian;
+		case 'N'
+		otherwise
+			buf = fail('invalidByteOrder', 'invalid byte order spec');
+			return;
+		end
+	end
 	buf = zeros(64, 1, 'uint8');
-	buf(1:2) = typecast(uint16(42), 'uint8');
-	[buf,len] = encAny(buf, uint32(2), v);
+	if swap
+		vers = swapbytes(vers);
+	end
+	buf(1:2) = typecast(vers, 'uint8')';
+	[buf,len] = encAny(buf, uint32(2), swap, v);
 	pad = uint8(4 - bitand(len,3));
 	[buf,len] = append(buf, len, repmat(bitcmp(pad),pad,1));
-	buf = buf(1:len);
+	if ~isempty(buf)
+		buf = buf(1:len);
+	end
 end
 
-function [buf,len] = encAny(buf, len, v)
+function [buf,len] = encAny(buf, len, swap, v)
 	if isnumeric(v)
-		[buf,len] = encNumeric(buf, len, v);
+		[buf,len] = encNumeric(buf, len, swap, v);
 	elseif islogical(v)
-		[buf,len] = encLogical(buf, len, v);
+		[buf,len] = encLogical(buf, len, swap, v);
 	elseif ischar(v)
-		[buf,len] = encChar(buf, len, v);
+		[buf,len] = encChar(buf, len, swap, v);
 	elseif iscell(v)
-		[buf,len] = encCell(buf, len, v);
+		[buf,len] = encCell(buf, len, swap, v);
 	elseif isstruct(v)
-		[buf,len] = encStruct(buf, len, v);
+		[buf,len] = encStruct(buf, len, swap, v);
 	else
-		len = fail('unsupported', ['unsupported class: ' class(v)]);
+		buf = fail('unsupported', ['unsupported class: ' class(v)]);
 	end
 end
 
-function [buf,len] = encNumeric(buf, len, v)
+function [buf,len] = encNumeric(buf, len, swap, v)
 	if issparse(v)
-		[buf,len] = encSparse(buf, len, v);
+		[buf,len] = encSparse(buf, len, swap, v);
 	elseif isreal(v)
-		[buf,len] = encTag(buf, len, v, class(v));
-		[buf,len] = append(buf, len, typecast(v(:),'uint8'));
+		[buf,len] = encTag(buf, len, swap, v, class(v));
+		[buf,len] = appendAny(buf, len, swap, v(:));
 	else
-		[buf,len] = encTag(buf, len, v, 'complex');
-		[buf,len] = encTag(buf, len, 0, class(v));
-		[buf,len] = append(buf, len, typecast(real(v(:)),'uint8'));
-		[buf,len] = append(buf, len, typecast(imag(v(:)),'uint8'));
+		[buf,len] = encTag(buf, len, swap, v, 'complex');
+		[buf,len] = encTag(buf, len, swap, 0, class(v));
+		[buf,len] = appendAny(buf, len, swap, real(v(:)));
+		[buf,len] = appendAny(buf, len, swap, imag(v(:)));
 	end
 end
 
-function [buf,len] = encLogical(buf, len, v)
+function [buf,len] = encLogical(buf, len, swap, v)
 	if issparse(v)
-		[buf,len] = encSparse(buf, len, v);
+		[buf,len] = encSparse(buf, len, swap, v);
 	else
-		[buf,len] = encTag(buf, len, v, 'logical');
+		[buf,len] = encTag(buf, len, swap, v, 'logical');
 		[buf,len] = append(buf, len, uint8(v(:)));
 	end
 end
 
-function [buf,len] = encSparse(buf, len, v)
+function [buf,len] = encSparse(buf, len, swap, v)
 	idx = find(v);
 	if isempty(idx)
 		idx = reshape(idx, 0, 0);
@@ -100,55 +122,52 @@ function [buf,len] = encSparse(buf, len, v)
 			idx = cast(idx, cls);
 		end
 	end
-	[buf,len] = encTag(buf, len, v, 'sparse');
-	[buf,len] = encNumeric(buf, len, idx);
-	[buf,len] = encAny(buf, len, full(v(idx)));
+	[buf,len] = encTag(buf, len, swap, v, 'sparse');
+	[buf,len] = encNumeric(buf, len, swap, idx);
+	[buf,len] = encAny(buf, len, swap, full(v(idx)));
 end
 
-function [buf,len] = encChar(buf, len, v)
+function [buf,len] = encChar(buf, len, swap, v)
 	if all(v <= intmax('uint8'))
-		[buf,len] = encTag(buf, len, v, 'char8');
+		[buf,len] = encTag(buf, len, swap, v, 'char8');
 		[buf,len] = append(buf, len, uint8(v(:)));
 	else
-		[buf,len] = encTag(buf, len, v, 'char');
-		[buf,len] = append(buf, len, typecast(uint16(v(:)),'uint8'));
+		[buf,len] = encTag(buf, len, swap, v, 'char16');
+		[buf,len] = appendAny(buf, len, swap, uint16(v(:)));
 	end
 end
 
-function [buf,len] = encCell(buf, len, v)
-	[buf,len] = encTag(buf, len, v, 'cell');
+function [buf,len] = encCell(buf, len, swap, v)
+	[buf,len] = encTag(buf, len, swap, v, 'cell');
 	for i = 1:numel(v)
-		[buf,len] = encAny(buf, len, v{i});
+		[buf,len] = encAny(buf, len, swap, v{i});
 	end
 end
 
-function [buf,len] = encStruct(buf, len, v)
+function [buf,len] = encStruct(buf, len, swap, v)
 	fields = fieldnames(v);
 	if numel(fields) > intmax('uint16')
-		len = fail('fieldCount', 'struct field count exceeds uint16 range');
+		buf = fail('fieldCount', 'struct field count exceeds uint16 range');
 		return;
 	end
-	[buf,len] = encTag(buf, len, v, 'struct');
-	[buf,len] = append(buf, len, typecast(uint16(numel(fields)),'uint8'));
+	[buf,len] = encTag(buf, len, swap, v, 'struct');
+	[buf,len] = appendAny(buf, len, swap, uint16(numel(fields)));
 	for i = 1:numel(fields)
 		field = fields{i};
-		[buf,len] = encChar(buf, len, field);
+		[buf,len] = encChar(buf, len, swap, field);
 		for j = 1:numel(v)
-			[buf,len] = encAny(buf, len, v(j).(field));
+			[buf,len] = encAny(buf, len, swap, v(j).(field));
 		end
 	end
 end
 
-function [buf,len] = encTag(buf, len, v, cls)
-	if len == 0
-		return;
-	end
-	classes = {'double','single','logical','char','char8','cell','struct', ...
+function [buf,len] = encTag(buf, len, swap, v, cls)
+	classes = {'double','single','logical','char8','char16','cell','struct', ...
 			'int8','uint8','int16','uint16','int32','uint32','int64', ...
 			'uint64','sparse','complex'};
 	tag = uint8(find(strcmp(cls,classes), 1));
 	if isempty(tag)
-		len = fail('unsupported', ['unsupported class: ' cls]);
+		buf = fail('unsupported', ['unsupported class: ' cls]);
 		return;
 	end
 	if isscalar(v)
@@ -156,18 +175,18 @@ function [buf,len] = encTag(buf, len, v, cls)
 		return;
 	end
 	maxsz = max(size(v));  % Not the same as length(v) for empty v
-	if ~ismatrix(v) || maxsz > intmax('uint8')
+	if maxsz > intmax('uint8') || ~ismatrix(v)
 		if ndims(v) > intmax('uint8')
-			len = fail('ndimsRange', 'ndims exceeds uint8 range');
+			buf = fail('ndimsRange', 'ndims exceeds uint8 range');
 			return;
 		end
 		if numel(v) > intmax('uint32')
-			len = fail('numelRange', 'numel exceeds uint32 range');
+			buf = fail('numelRange', 'numel exceeds uint32 range');
 			return;
 		end
 		[cid,cls] = pickCls(maxsz);
-		[buf,len] = append(buf, len, [tag+128+bitshift(cid,5); ...
-				uint8(ndims(v)); typecast(cast(size(v)',cls),'uint8')]);
+		[buf,len] = append(buf, len, [tag+bitshift(4+cid,5); uint8(ndims(v))]);
+		[buf,len] = appendAny(buf, len, swap, cast(size(v),cls));
 	elseif maxsz == 0
 		[buf,len] = append(buf, len, tag+128);
 	elseif iscolumn(v)
@@ -191,26 +210,32 @@ function [cid,cls] = pickCls(maxval)
 	end
 end
 
-function [buf,len] = append(buf, len, v)
-	if isempty(v) || len == 0
-		return;
+function [buf,len] = appendAny(buf, len, swap, v)
+	if swap
+		v = swapbytes(v);
 	end
-	n = len + numel(v);
-	if n > numel(buf)
-		grow = max(2*numel(buf),n) - numel(buf);
-		buf = [buf; zeros(grow,1,'uint8')];
-		if numel(buf) >= intmax('uint32')
-			len = fail('overflow', 'buffer overflow');
-			return;
-		end
-	end
-	buf(len+1:n) = v;
-	len = n;
+	[buf,len] = append(buf, len, typecast(v,'uint8'));
 end
 
-function len = fail(id, msg)
+function [buf,len] = append(buf, len, v)
+	n = uint32(numel(buf));
+	i = len + 1;
+	len = len + numel(v);
+	if len > n
+		if n == 0
+			return;
+		elseif len > intmax('uint32') - 3
+			buf = fail('overflow', 'buffer overflow');
+			return;
+		end
+		buf = [buf; zeros(max(n/2,len-n),1,'uint8')];
+	end
+	buf(i:len) = v(:);
+end
+
+function buf = fail(id, msg)
 	if coder.target('MATLAB')
 		error(['mxencode:' id], msg);
 	end
-	len = uint32(0);
+	buf = uint8([]);
 end

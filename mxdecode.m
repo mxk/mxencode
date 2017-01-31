@@ -6,61 +6,70 @@
 %   Written by Maxim Khitrov (January 2017)
 
 function v = mxdecode(buf)  %#codegen
+	vers = uint16(42);
+	swap = false;
 	n = uint32(numel(buf));
-	if isa(buf, 'uint8') && isreal(buf) && 4 <= n && n < intmax('uint32') && ...
-			iscolumn(buf) && typecast(buf(1:2), 'uint16') == 42 && ...
-			bitand(n, 3) == 0
-		[v,pos] = decNext(buf, uint32(3));
-		if pos <= n && n-pos <= 3 && all(buf(pos:end) == 255-(n-pos+1))
-			return;
-		end
+	if n == 0 || bitand(n,3) ~= 0 || ~isa(buf,'uint8') || ~isreal(buf) || ...
+			~iscolumn(buf)
+		v = fail('invalidBuf', 'invalid buffer');
+		return;
 	end
-	if coder.target('MATLAB')
-		error('mxdecode:invalidBuf', 'invalid buffer');
+	switch typecast(buf(1:2), 'uint16')
+	case vers
+	case swapbytes(vers)
+		swap = true;
+	otherwise
+		v = fail('invalidFormat', 'invalid buffer format');
+		return;
 	end
-	v = [];
+	[v,pos] = decNext(buf, uint32(3), swap);
+	pad = uint32(bitcmp(buf(n)));
+	if pad > 4 || pos + pad - 1 ~= n || any(buf(pos:n-1) ~= buf(n))
+		v = fail('corrupt', 'corrupt buffer');
+	end
 end
 
-function [v,pos] = decNext(buf, pos)
-	[cls,bpe,vsz,pos] = decTag(buf, pos);
+function [v,pos] = decNext(buf, pos, swap)
+	[cls,bpe,vsz,pos] = decTag(buf, pos, swap);
 	n = prod(vsz, 'native');
 	switch cls
 	case 'logical'
 		[v,pos] = decLogical(buf, pos, n);
-	case 'char8'
-		[v,pos] = decChar8(buf, pos, n);
 	case 'char'
-		[v,pos] = decChar(buf, pos, n);
+		[v,pos] = decChar(buf, pos, swap, n, bpe);
 	case 'cell'
-		[v,pos] = decCell(buf, pos, n);
+		[v,pos] = decCell(buf, pos, swap, n);
 	case 'struct'
-		[v,pos] = decStruct(buf, pos, n);
+		[v,pos] = decStruct(buf, pos, swap, n);
 	case 'sparse'
-		[v,pos] = decSparse(buf, pos, n);
+		[v,pos] = decSparse(buf, pos, swap, n);
 	case 'complex'
-		[v,pos] = decComplex(buf, pos, n);
+		[v,pos] = decComplex(buf, pos, swap, n);
 	otherwise
-		[v,pos] = decNumeric(buf, pos, n*bpe, cls);
+		[v,pos] = decNumeric(buf, pos, swap, n*bpe, cls);
 	end
 	if pos <= numel(buf)
 		v = reshape(v, vsz);
 	end
 end
 
-function [v,pos] = decNumeric(buf, pos, n, cls)
+function [v,pos] = decNumeric(buf, pos, swap, n, cls)
 	if ~isempty(cls)
 		[i,j,pos] = consume(buf, pos, n);
 		v = typecast(buf(i:j), cls);
+		if swap
+			v = swapbytes(v);
+		end
 	else
 		v = [];
 	end
 end
 
-function [v,pos] = decComplex(buf, pos, n)
-	[cls,bpe,~,pos] = decTag(buf, pos);
+function [v,pos] = decComplex(buf, pos, swap, n)
+	[cls,bpe,~,pos] = decTag(buf, pos, swap);
 	n = n*bpe;
-	[re,pos] = decNumeric(buf, pos, n, cls);
-	[im,pos] = decNumeric(buf, pos, n, cls);
+	[re,pos] = decNumeric(buf, pos, swap, n, cls);
+	[im,pos] = decNumeric(buf, pos, swap, n, cls);
 	v = complex(re, im);
 end
 
@@ -69,49 +78,59 @@ function [v,pos] = decLogical(buf, pos, n)
 	v = logical(buf(i:j));
 end
 
-function [v,pos] = decSparse(buf, pos, n)
-	[idx,pos] = decNext(buf, pos);
-	[nzv,pos] = decNext(buf, pos);
+function [v,pos] = decSparse(buf, pos, swap, n)
+	[idx,pos] = decNext(buf, pos, swap);
+	[nze,pos] = decNext(buf, pos, swap);
 	if coder.target('MATLAB')
-		v = sparse(double(idx), 1, nzv, double(n), 1);
+		v = sparse(double(idx), 1, nze, double(n), 1);
 	else
-		v = zeros(n, 1, class(nzv));
-		v(idx) = nzv;
+		v = zeros(n, 1, class(nze));
+		v(idx) = nze;
 	end
 end
 
-function [v,pos] = decChar8(buf, pos, n)
-	[i,j,pos] = consume(buf, pos, n);
-	v = char(buf(i:j));
+function [v,pos] = decChar(buf, pos, swap, n, bpe)
+	if bpe == 1
+		[i,j,pos] = consume(buf, pos, n);
+		v = char(buf(i:j));
+	else
+		[v,pos] = decNumeric(buf, pos, swap, n*2, 'uint16');
+		v = char(v);
+	end
 end
 
-function [v,pos] = decChar(buf, pos, n)
-	[v,pos] = decNumeric(buf, pos, n*2, 'uint16');
-	v = char(v);
-end
-
-function [v,pos] = decCell(buf, pos, n)
+function [v,pos] = decCell(buf, pos, swap, n)
 	v = cell(n, 1);
 	for i = 1:n
-		[v{i},pos] = decNext(buf, pos);
+		[v{i},pos] = decNext(buf, pos, swap);
 	end
 end
 
-function [v,pos] = decStruct(buf, pos, n)
-	[nf,pos] = decNumeric(buf, pos, uint32(2), 'uint16');
+function [v,pos] = decStruct(buf, pos, swap, n)
+	[nf,pos] = decNumeric(buf, pos, swap, uint32(2), 'uint16');
+	if isempty(nf)
+		v = struct([]);
+		return;
+	end
 	fieldvals = cell(1, 2*nf);
 	for i = 1:2:numel(fieldvals)
-		[fieldvals{i},pos] = decNext(buf, pos);
+		[field,pos] = decNext(buf, pos, swap);
+		if isempty(field)
+			pos = intmax('uint32');
+			v = struct([]);
+			return;
+		end
 		vals = cell(n, 1);
 		for j = 1:n
-			[vals{j},pos] = decNext(buf, pos);
+			[vals{j},pos] = decNext(buf, pos, swap);
 		end
+		fieldvals{i} = field;
 		fieldvals{i+1} = vals;
 	end
 	v = struct(fieldvals{:});
 end
 
-function [cls,bpe,vsz,pos] = decTag(buf, pos)
+function [cls,bpe,vsz,pos] = decTag(buf, pos, swap)
 	[i,~,pos] = consume(buf, pos, 1);
 	cid = bitand(buf(i), 31);
 	szf = bitshift(buf(i), -5);
@@ -134,13 +153,13 @@ function [cls,bpe,vsz,pos] = decTag(buf, pos)
 		szf = bitand(szf, 3);
 		[i,~,pos] = consume(buf, pos, 1);
 		szn = uint32(buf(i)) * bitshift(uint32(1),szf-1);
-		[vsz,pos] = decNumeric(buf, pos, szn, fmt{szf});
+		[vsz,pos] = decNumeric(buf, pos, swap, szn, fmt{szf});
 		vsz = uint32(vsz');
 	end
-	classes = {'double','single','logical','char','char8','cell','struct', ...
+	classes = {'double','single','logical','char','char','cell','struct', ...
 			'int8','uint8','int16','uint16','int32','uint32','int64', ...
 			'uint64','sparse','complex'};
-	bytesPerElement = uint32([8,4,1,2,1,0,0,1,1,2,2,4,4,8,8,0,0]);
+	bytesPerElement = uint32([8,4,1,1,2,0,0,1,1,2,2,4,4,8,8,0,0]);
 	if pos <= numel(buf) && 1 <= cid && cid <= numel(classes)
 		cls = classes{cid};
 		bpe = bytesPerElement(cid);
@@ -161,4 +180,11 @@ function [i,j,pos] = consume(buf, pos, n)
 		j = uint32(0);
 		pos = intmax('uint32');
 	end
+end
+
+function v = fail(id, msg)
+	if coder.target('MATLAB')
+		error(['mxdecode:' id], msg);
+	end
+	v = [];
 end

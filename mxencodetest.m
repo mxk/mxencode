@@ -22,6 +22,10 @@ function tests = mxencodetest(coverage)
 	end
 end
 
+function setup(tc)
+	tc.TestData.ByteOrder = 'N';
+end
+
 function testEmpty(tc)
 	s = [0,0];                veq(tc, reshape([],s), 1);
 	s = [0,1];                veq(tc, reshape([],s), 1+1);
@@ -164,7 +168,30 @@ function testStruct(tc)
 	veq(tc, v, 1+1+2 + 1+1+1+8+1+8 + 1+1+1+8+1 + 1+1+2+1+2+1+1+2*8);
 end
 
+function testByteOrder(tc)
+	native = mxencode(0);
+	if typecast(uint8([0 1]),'uint16') == 1
+		tc.assertEqual(native, mxencode(0,'B'));
+		tc.assertNotEqual(native, mxencode(0,'L'));
+		tc.TestData.ByteOrder = 'L';
+	else
+		tc.assertEqual(native, mxencode(0,'L'));
+		tc.assertNotEqual(native, mxencode(0,'B'));
+		tc.TestData.ByteOrder = 'B';
+	end
+	testEmpty(tc);
+	testSizeFormat(tc);
+	testNumeric(tc);
+	testComplex(tc);
+	testLogical(tc);
+	testSparse(tc);
+	testChar(tc);
+	testCell(tc);
+	testStruct(tc);
+end
+
 function testError(tc)
+	tc.verifyError(@() mxencode([],'X'), 'mxencode:invalidByteOrder');
 	encErr(tc, @(x) x, 'unsupported');
 	encErr(tc, sparse(4294967296,1,1), 'numelRange');
 
@@ -175,19 +202,20 @@ function testError(tc)
 	encErr(tc, sparse(65536,65536), 'numelRange');
 	%encErr(tc, zeros(536870912,1), 'overflow');
 
-	decErr(tc, uint8([]));
+	decErr(tc, uint8([]), 'invalidBuf');
+	decErr(tc, uint8([0;0;0;0]), 'invalidFormat');
 
 	buf = mxencode('abc');
 	buf(4) = 255;
-	decErr(tc, buf);
+	decErr(tc, buf, 'corrupt');
 
 	buf = mxencode(sparse(1,0));
 	buf(3) = bitor(buf(3), 31);
-	decErr(tc, buf);
+	decErr(tc, buf, 'corrupt');
 end
 
 function veq(tc, v, len)
-	buf = mxencode(v);
+	buf = mxencode(v, tc.TestData.ByteOrder);
 	if nargin == 3
 		tc.verifyNumElements(buf, 2+len+double(bitcmp(buf(end))));
 	end
@@ -202,9 +230,9 @@ function encErr(tc, v, errid)
 	end
 end
 
-function decErr(tc, buf)
+function decErr(tc, buf, errid)
 	if true
-		tc.verifyError(@() mxdecode(buf), 'mxdecode:invalidBuf');
+		tc.verifyError(@() mxdecode(buf), ['mxdecode:' errid]);
 	else
 		tc.verifyEmpty(mxdecode(v));
 	end
