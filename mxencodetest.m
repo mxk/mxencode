@@ -5,7 +5,7 @@
 %
 %   See also MXENCODE, MXDECODE, RUNTESTS.
 
-%   Written by Maxim Khitrov (January 2017)
+%   Written by Maxim Khitrov (February 2017)
 
 function tests = mxencodetest(coverage)
 	if nargout == 1
@@ -23,19 +23,21 @@ function tests = mxencodetest(coverage)
 end
 
 function setup(tc)
-	tc.TestData.ByteOrder = 'N';
+	tc.TestData.byteOrder = '';
+	tc.TestData.sig = uint16(42);
+	tc.TestData.cgen = false;
 end
 
 function testEmpty(tc)
-	s = [0,0];                veq(tc, reshape([],s), 1);
-	s = [0,1];                veq(tc, reshape([],s), 1+1);
-	s = [1,0];                veq(tc, reshape([],s), 1+1);
-	s = [0:2];                veq(tc, reshape([],s), 1+1+numel(s));
-	s = [0:254];              veq(tc, reshape([],s), 1+1+numel(s));
-	s = [0,256];              veq(tc, reshape([],s), 1+1+numel(s)*2);
-	s = [256,0];              veq(tc, reshape([],s), 1+1+numel(s)*2);
-	s = [0,intmax('uint32')]; veq(tc, reshape([],s), 1+1+numel(s)*4);
-	s = [intmax('uint32'),0]; veq(tc, reshape([],s), 1+1+numel(s)*4);
+	s = [0,0];               veq(tc, reshape([],s), 1);
+	s = [0,1];               veq(tc, reshape([],s), 1+1);
+	s = [1,0];               veq(tc, reshape([],s), 1+1);
+	s = [0:2];               veq(tc, reshape([],s), 1+1+numel(s));
+	s = [0:254];             veq(tc, reshape([],s), 1+1+numel(s));
+	s = [0,256];             veq(tc, reshape([],s), 1+1+numel(s)*2);
+	s = [256,0];             veq(tc, reshape([],s), 1+1+numel(s)*2);
+	s = [0,intmax('int32')]; veq(tc, reshape([],s), 1+1+numel(s)*4);
+	s = [intmax('int32'),0]; veq(tc, reshape([],s), 1+1+numel(s)*4);
 end
 
 function testSizeFormat(tc)
@@ -174,37 +176,20 @@ function testStruct(tc)
 	veq(tc, v, 1+2 + 1+1+1+1+1+1+2 + 1+1+8+1+8+1 + 1+8+1+1 + 1+1+1+8+1+1+1+1+1);
 end
 
-function testByteOrder(tc)
-	native = mxencode(0);
-	if typecast(uint8([0 1]),'uint16') == 1
-		tc.assertEqual(native, mxencode(0,'B'));
-		tc.assertNotEqual(native, mxencode(0,'L'));
-		tc.TestData.ByteOrder = 'L';
-	else
-		tc.assertEqual(native, mxencode(0,'L'));
-		tc.assertNotEqual(native, mxencode(0,'B'));
-		tc.TestData.ByteOrder = 'B';
-	end
-	testEmpty(tc);
-	testSizeFormat(tc);
-	testNumeric(tc);
-	testComplex(tc);
-	testLogical(tc);
-	testSparse(tc);
-	testChar(tc);
-	testCell(tc);
-	testStruct(tc);
-end
-
 function testError(tc)
-	tc.verifyError(@() mxencode([],'X'), 'MATLAB:unrecognizedStringChoice');
-	tc.verifyError(@() mxencode([],'N',0), 'mxencode:invalidVersion');
+	tc.TestData.byteOrder = 'X';
+	encErr(tc, [], 'invalidByteOrder');
+	tc.TestData.byteOrder = '';
+	tc.TestData.sig = uint16(0);
+	encErr(tc, [], 'invalidSig');
+	tc.TestData.sig = uint16(42);
 
 	encErr(tc, @(x) x, 'unsupported');
 	encErr(tc, sparse(4294967296,1,1), 'numelRange');
 	encErr(tc, reshape([], 0:255), 'ndimsRange');
 	encErr(tc, sparse(65536,65536), 'numelRange');
-	%encErr(tc, zeros(536870911,1), 'overflow');
+	encErr(tc, reshape([], [0,intmax('uint32')]), 'maxSize');
+	encErr(tc, zeros(268435456,1), 'overflow');
 
 	decErr(tc, uint8([]), 'invalidBuf');
 	decErr(tc, uint8([0;0;0;0]), 'invalidBuf');
@@ -219,8 +204,44 @@ function testError(tc)
 	decErr(tc, buf, 'corrupt');
 end
 
+function testByteOrder(tc)
+	native = mxencode(0);
+	if typecast(uint8([0 1]),'uint16') == 1
+		tc.assertEqual(native, mxencode(0,'B'));
+		tc.assertNotEqual(native, mxencode(0,'L'));
+		tc.TestData.byteOrder = 'L';
+	else
+		tc.assertEqual(native, mxencode(0,'L'));
+		tc.assertNotEqual(native, mxencode(0,'B'));
+		tc.TestData.byteOrder = 'B';
+	end
+	testEmpty(tc);
+	testSizeFormat(tc);
+	testNumeric(tc);
+	testComplex(tc);
+	testLogical(tc);
+	testSparse(tc);
+	testChar(tc);
+	testCell(tc);
+	testStruct(tc);
+end
+
+function testCgen(tc)
+	tc.TestData.cgen = true;
+	testEmpty(tc);
+	testSizeFormat(tc);
+	testNumeric(tc);
+	testComplex(tc);
+	testLogical(tc);
+	testSparse(tc);
+	testChar(tc);
+	testCell(tc);
+	testStruct(tc);
+	testError(tc);
+end
+
 function veq(tc, v, len)
-	buf = mxencode(v, tc.TestData.ByteOrder);
+	buf = mxencode(v, tc.TestData.byteOrder, tc.TestData.sig, tc.TestData.cgen);
 	if nargin == 3
 		tc.verifyNumElements(buf, 2+len+double(bitcmp(buf(end))));
 	end
@@ -228,10 +249,15 @@ function veq(tc, v, len)
 end
 
 function encErr(tc, v, errid)
-	if true
-		tc.verifyError(@() mxencode(v), ['mxencode:' errid]);
+	f = @() mxencode(v, tc.TestData.byteOrder, tc.TestData.sig, ...
+			tc.TestData.cgen);
+	if tc.TestData.cgen
+		tc.verifyEmpty(f());
 	else
-		tc.verifyEmpty(mxencode(v));
+		if ~contains(errid, ':')
+			errid = ['mxencode:' errid];
+		end
+		tc.verifyError(f, errid);
 	end
 end
 
