@@ -125,11 +125,13 @@ function testChar(tc)
 	v = char([255]);     veq(tc, v, 1+numel(v));
 	v = char([0,255]);   veq(tc, v, 1+1+numel(v));
 	v = char([0,1;2,3]); veq(tc, v, 1+2+numel(v));
-	v = char([65535]);   veq(tc, v, 1+numel(v)*2);
-	v = char([0,65535]); veq(tc, v, 1+1+numel(v)*2);
 	v = char([1:255]);   veq(tc, v, 1+1+numel(v));
 	v = char([0:255]');  veq(tc, v, 1+1+2*2+numel(v));
-	v = char([0:65535]); veq(tc, v, 1+1+4*2+numel(v)*2);
+	if ~tc.TestData.cgen
+		v = char([65535]);   veq(tc, v, 1+numel(v)*2);
+		v = char([0,65535]); veq(tc, v, 1+1+numel(v)*2);
+		v = char([0:65535]); veq(tc, v, 1+1+4*2+numel(v)*2);
+	end
 end
 
 function testCell(tc)
@@ -148,11 +150,17 @@ function testStruct(tc)
 	v = struct();
 	veq(tc, v, 1 + 1);
 
+	v = repmat(struct(), 2, 1);
+	veq(tc, v, 1+1 + 1);
+
 	v = struct([]);
 	veq(tc, v, 1 + 1);
 
 	v = struct('a',1);
 	veq(tc, v, 1 + 1+1+1 + 1+8);
+
+	v = repmat(struct('a',1), 1, 2);
+	veq(tc, v, 1+1 + 1+1+1 + 1+8+1+8);
 
 	v = struct('a',1,'b',2);
 	veq(tc, v, 1 + 1+1+1+1+1+1 + 1+8+1+8);
@@ -193,15 +201,15 @@ function testError(tc)
 
 	decErr(tc, uint8([]), 'invalidBuf');
 	decErr(tc, uint8([0;0;0;0]), 'invalidBuf');
-	decErr(tc, uint8([0;1;0;0]), 'invalidFormat');
+	decErr(tc, uint8([0;1;0;0]), 'invalidSig');
 
 	buf = mxencode('abc');
 	buf(4) = 255;
-	decErr(tc, buf, 'corrupt');
+	decErr(tc, buf, 'invalidBuf');
 
 	buf = mxencode(sparse(1,0));
 	buf(3) = bitor(buf(3), 31);
-	decErr(tc, buf, 'corrupt');
+	decErr(tc, buf, 'invalidTag');
 end
 
 function testByteOrder(tc)

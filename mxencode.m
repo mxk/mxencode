@@ -1,21 +1,22 @@
 %MXENCODE   Serialize data into a byte array.
+%
 %   BUF = MXENCODE(V) encodes V, which may be numeric (including complex),
-%   logical, char, cell, struct, sparse, or any combination thereof, into a
-%   uint8 array. Use MXDECODE to extract the original value from BUF.
+%     logical, char, cell, struct, sparse, or any combination thereof, into a
+%     uint8 column vector. Use MXDECODE to extract the original value from BUF.
 %
 %   BUF = MXENCODE(V,BYTEORDER) encodes V using the specified BYTEORDER, which
-%   must be one of '', 'B', or 'L' for native, big-endian, or little-endian,
-%   respectively. The default is native.
+%     must be one of '', 'B', or 'L' for native, big-endian, or little-endian,
+%     respectively. The default is native.
 %
 %   BUF = MXENCODE(V,BYTEORDER,SIG) encodes the specified SIG into the first two
-%   signature bytes. SIG must be a uint16 value with distinct high and low bytes
-%   to enable byte order detection. The default signature is the answer to the
-%   ultimate question of life, the universe, and everything.
+%     signature bytes. SIG must be a uint16 value with distinct high and low
+%     bytes to enable byte order detection. The default signature is the answer
+%     to the ultimate question of life, the universe, and everything.
 %
 %   BUF = MXENCODE(V,BYTEORDER,SIG,CGEN) enables standalone mode when CGEN is
-%   set to true. This form must be used when generating C/C++ code with MATLAB
-%   Coder. It disables the use of the error function, returning an empty buf
-%   instead when an error occurs.
+%     set to true. This form must be used when generating C/C++ code with MATLAB
+%     Coder. It disables the use of the error function, returning an empty buf
+%     instead when an error occurs.
 %
 %   MXENCODE and MXDECODE were written primarily for use with MATLAB Coder to
 %   serve as an efficient data exchange format between MATLAB and non-MATLAB
@@ -30,23 +31,23 @@
 %   VALUE is a recursive encoding of V based on its class. The first byte is a
 %   tag in which the lower 5 bits specify the class and the upper 3 bits specify
 %   size encoding format:
-%      0 = scalar (1x1): [ TAG(1) DATA ]
-%      1 = column vector (Mx1) with M < 256: [ TAG(1) M(1) DATA ]
-%      2 = row vector (1xN) with N < 256: [ TAG(1) N(1) DATA ]
-%      3 = matrix (MxN) with M < 256 and N < 256: [ TAG(1) M(1) N(1) DATA ]
-%      4 = empty value (0x0): [ TAG(1) ]
-%      5 = uint8 general format: [ TAG(1) NDIMS(1) SIZE1(1) SIZE2(1) ... DATA ]
-%      6 = uint16 general format: [ TAG(1) NDIMS(1) SIZE1(2) SIZE2(2) ... DATA ]
-%      7 = uint32 general format: [ TAG(1) NDIMS(1) SIZE1(4) SIZE2(4) ... DATA ]
+%     0 = scalar (1x1): [ TAG(1) DATA ]
+%     1 = column vector (Mx1) with M < 256: [ TAG(1) M(1) DATA ]
+%     2 = row vector (1xN) with N < 256: [ TAG(1) N(1) DATA ]
+%     3 = matrix (MxN) with M < 256 and N < 256: [ TAG(1) M(1) N(1) DATA ]
+%     4 = empty value (0x0): [ TAG(1) ]
+%     5 = uint8 general format: [ TAG(1) NDIMS(1) SIZE1(1) SIZE2(1) ... DATA ]
+%     6 = uint16 general format: [ TAG(1) NDIMS(1) SIZE1(2) SIZE2(2) ... DATA ]
+%     7 = uint32 general format: [ TAG(1) NDIMS(1) SIZE1(4) SIZE2(4) ... DATA ]
 %
 %   PAD contains 1-4 bytes all set to the bitwise complement of PAD length. It
 %   serves as an explicit end-of-data marker and ensures that BUF contains a
 %   multiple of 4 bytes.
 %
 %   Limits:
-%      Maximum number of array dimensions: 255
-%      Maximum number of array elements: 2,147,483,647
-%      Maximum buffer size: 2,147,483,644
+%     Maximum number of array dimensions: 255
+%     Maximum number of array elements: 2,147,483,647
+%     Maximum buffer size: 2,147,483,644
 %
 %   See also MXDECODE, TYPECAST, COMPUTER.
 
@@ -54,15 +55,15 @@
 
 function buf = mxencode(v, byteOrder, sig, cgen)  %#codegen
 	narginchk(1, 4);
-	cgen = (nargin == 4 && cgen);
+	cgen = int32(nargin == 4 && cgen);
 	ctx = struct( ...
 		'buf',  zeros(64, 1, 'uint8'), ...
 		'len',  int32(0), ...
 		'swap', false, ...
-		'cgen', cgen ...
+		'cgen', false(1 - cgen) ...  % Empty is compile-time true
 	);
 	if cgen
-		coder.cstructname(ctx, 'Ctx');
+		coder.cstructname(ctx, 'MxEncCtx');
 		coder.varsize('ctx.buf');
 	end
 	if nargin >= 2 && ~isempty(byteOrder)
@@ -86,7 +87,7 @@ function buf = mxencode(v, byteOrder, sig, cgen)  %#codegen
 	ctx = encAny(ctx, v);
 	pad = uint8(4 - bitand(ctx.len,3));
 	ctx = appendBytes(ctx, repmat(bitcmp(pad),pad,1));
-	if ~isempty(ctx.buf)
+	if valid(ctx)
 		buf = ctx.buf(1:ctx.len);
 	else
 		buf = zeros(0, 1, 'uint8');
@@ -158,9 +159,12 @@ function ctx = encChar(ctx, v)
 	if all(v(:) <= intmax('uint8'))
 		ctx = encTag(ctx, v, 'char8');
 		ctx = appendBytes(ctx, uint8(v(:)));
-	else
+	elseif ~ctx.cgen
 		ctx = encTag(ctx, v, 'char16');
 		ctx = append(ctx, uint16(v(:)));
+	else
+		% Coder restriction
+		ctx = fail(ctx, 'unicodeChar', '16-bit characters are not supported');
 	end
 end
 
@@ -266,9 +270,13 @@ function ctx = appendBytes(ctx, v)
 end
 
 function ctx = fail(ctx, id, msg)
-	if ctx.cgen
-		ctx.buf = zeros(0, 1, 'uint8');
-	else
+	if ~ctx.cgen
 		error([mfilename ':' id], msg);
+	else
+		ctx.buf = zeros(0, 1, 'uint8');
 	end
+end
+
+function tf = valid(ctx)
+	tf = ~isempty(ctx.buf);
 end
