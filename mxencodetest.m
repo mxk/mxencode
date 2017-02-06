@@ -184,6 +184,19 @@ function testStruct(tc)
 	veq(tc, v, 1+2 + 1+1+1+1+1+1+2 + 1+1+8+1+8+1 + 1+8+1+1 + 1+1+1+8+1+1+1+1+1);
 end
 
+function testSig(tc)
+	buf16 = mxencode(123, uint16(1));
+	buf64 = mxencode(123, uint64(1));
+
+	tc.verifyEqual(mxdecode(buf16, uint16(1)), 123);
+	tc.verifyEqual(mxdecode(buf64, uint64(1)), 123);
+	tc.verifyNotEqual(buf16, buf64);
+
+	tc.verifyError(@() mxdecode(buf16), 'mxdecode:invalidSig');
+	tc.verifyError(@() mxdecode(buf16, uint64(1)), 'mxdecode:invalidSig');
+	tc.verifyError(@() mxdecode(buf64, uint16(1)), 'mxdecode:invalidTag');
+end
+
 function testError(tc)
 	tc.TestData.byteOrder = 'X';
 	encErr(tc, [], 'invalidByteOrder');
@@ -200,7 +213,8 @@ function testError(tc)
 	encErr(tc, zeros(268435456,1), 'overflow');
 
 	decErr(tc, uint8([]), 'invalidBuf');
-	decErr(tc, uint8([0;0;0;0]), 'invalidBuf');
+	decErr(tc, uint8([0;1;0]), 'invalidBuf');
+	decErr(tc, uint8([0;0;0;0]), 'invalidSig');
 	decErr(tc, uint8([0;1;0;0]), 'invalidSig');
 
 	buf = mxencode('abc');
@@ -215,12 +229,12 @@ end
 function testByteOrder(tc)
 	native = mxencode(0);
 	if typecast(uint8([0 1]),'uint16') == 1
-		tc.assertEqual(native, mxencode(0,'B'));
-		tc.assertNotEqual(native, mxencode(0,'L'));
+		tc.assertEqual(native, mxencode(0,[],'B'));
+		tc.assertNotEqual(native, mxencode(0,[],'L'));
 		tc.TestData.byteOrder = 'L';
 	else
-		tc.assertEqual(native, mxencode(0,'L'));
-		tc.assertNotEqual(native, mxencode(0,'B'));
+		tc.assertEqual(native, mxencode(0,[],'L'));
+		tc.assertNotEqual(native, mxencode(0,[],'B'));
 		tc.TestData.byteOrder = 'B';
 	end
 	testEmpty(tc);
@@ -249,7 +263,12 @@ function testCgen(tc)
 end
 
 function veq(tc, v, len)
-	buf = mxencode(v, tc.TestData.byteOrder, tc.TestData.sig, tc.TestData.cgen);
+	if tc.TestData.cgen
+		[buf,err] = mxencode(v, tc.TestData.sig, tc.TestData.byteOrder);
+		tc.verifyEmpty(err);
+	else
+		buf = mxencode(v, tc.TestData.sig, tc.TestData.byteOrder);
+	end
 	if nargin == 3
 		tc.verifyNumElements(buf, 2+len+double(bitcmp(buf(end))));
 	end
@@ -257,10 +276,11 @@ function veq(tc, v, len)
 end
 
 function encErr(tc, v, errid)
-	f = @() mxencode(v, tc.TestData.byteOrder, tc.TestData.sig, ...
-			tc.TestData.cgen);
+	f = @() mxencode(v, tc.TestData.sig, tc.TestData.byteOrder);
 	if tc.TestData.cgen
-		tc.verifyEmpty(f());
+		[buf,err] = f();
+		tc.verifyEmpty(buf);
+		tc.verifyEqual(err, errid);
 	else
 		if ~contains(errid, ':')
 			errid = ['mxencode:' errid];
