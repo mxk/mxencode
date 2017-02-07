@@ -4,11 +4,11 @@
 %     logical, char, cell, struct, sparse, or any combination thereof, into a
 %     uint8 column vector. Use MXDECODE to extract the original value from BUF.
 %
-%   BUF = MXENCODE(V,SIG) encodes the specified SIG into the first two to eight
-%     signature bytes, depending on SIG class. Any non-integer value is
-%     converted to uint16. The resulting bytes must be distinct when swapped to
-%     allow byte order detection. The default signature is the answer to the
-%     ultimate question of life, the universe, and everything.
+%   BUF = MXENCODE(V,SIG) encodes the specified SIG into the buffer signature.
+%     SIG must be an integer in the range [0,239]. It may be used to provide
+%     application-specific information about buffer contents. The default
+%     signature is the answer to the ultimate question of life, the universe,
+%     and everything.
 %
 %   BUF = MXENCODE(V,SIG,BYTEORDER) encodes V using the specified BYTEORDER,
 %     which must be one of '', 'B', or 'L' for native, big-endian, or
@@ -16,30 +16,34 @@
 %
 %   [BUF,ERR] = MXENCODE(V,SIG,BYTEORDER) activates standalone mode for
 %     generating C/C++ code with MATLAB Coder. SIG and BYTEORDER arguments may
-%     be omitted. The id of any error encountered during encoding is returned in
-%     ERR, in which case BUF will be empty.
+%     be omitted. If an error is encountered during encoding, ERR will contain
+%     its message id and BUF will be empty.
 %
-%   MXENCODE and MXDECODE were written primarily for use with MATLAB Coder to
-%   serve as an efficient data exchange format between MATLAB and non-MATLAB
-%   code. Multiple restrictions are placed on the encoded data when these
-%   functions are compiled for standalone use. See MXDECODE for more info.
+%   MXENCODE and MXDECODE were designed for use with MATLAB Coder to serve as an
+%   efficient data exchange format between MATLAB and non-MATLAB code. Multiple
+%   restrictions are placed on the encoded data when these functions are
+%   compiled for standalone use. See MXDECODE for more info.
 %
-%   BUF format (FIELD(#BYTES)): [ SIG(2-8) VALUE(1-N) PAD(1-4) ]
+%   Buffer format version 240 (FIELD{#BYTES}): [ SIG{2} VALUE{1-N} PAD{1-4} ]
 %
-%   SIG contains at least two signature bytes that allow the decoder to identify
-%   a valid buffer and determine the byte order that was used for encoding.
+%   SIG is a uint16 value that allows the decoder to identify a valid buffer and
+%   determine the byte order that was used for encoding. The low byte is the
+%   user-specified value (42 by default). The high byte is the buffer format
+%   version. It is incremented by one for all backward-incompatible changes to
+%   the encoding format. The current version is 240. To support unambiguous byte
+%   order detection, the low byte must be less than 240.
 %
 %   VALUE is a recursive encoding of V based on its class. The first byte is a
-%   tag in which the lower 5 bits specify the class and the upper 3 bits specify
-%   size encoding format:
-%     0 = scalar (1x1): [ TAG(1) DATA ]
-%     1 = column vector (Mx1) with M < 256: [ TAG(1) M(1) DATA ]
-%     2 = row vector (1xN) with N < 256: [ TAG(1) N(1) DATA ]
-%     3 = matrix (MxN) with M < 256 and N < 256: [ TAG(1) M(1) N(1) DATA ]
-%     4 = empty value (0x0): [ TAG(1) ]
-%     5 = uint8 general format: [ TAG(1) NDIMS(1) SIZE1(1) SIZE2(1) ... DATA ]
-%     6 = uint16 general format: [ TAG(1) NDIMS(1) SIZE1(2) SIZE2(2) ... DATA ]
-%     7 = uint32 general format: [ TAG(1) NDIMS(1) SIZE1(4) SIZE2(4) ... DATA ]
+%   tag in which the lower 5 bits specify the class and the upper 3 bits, taken
+%   as an integer shifted right by 5, specify size encoding format:
+%     0 = scalar (1x1):                          [ TAG{1} DATA ]
+%     1 = column vector (Mx1) with M < 256:      [ TAG{1} M{1} DATA ]
+%     2 = row vector (1xN) with N < 256:         [ TAG{1} N{1} DATA ]
+%     3 = matrix (MxN) with M < 256 and N < 256: [ TAG{1} M{1} N{1} DATA ]
+%     4 = normalized empty value (0x0):          [ TAG{1} ]
+%     5 = uint8 general format:  [ TAG{1} NDIMS{1} S1{1} S2{1} ... DATA ]
+%     6 = uint16 general format: [ TAG{1} NDIMS{1} S1{2} S2{2} ... DATA ]
+%     7 = uint32 general format: [ TAG{1} NDIMS{1} S1{4} S2{4} ... DATA ]
 %
 %   PAD contains 1-4 bytes all set to the bitwise complement of PAD length. It
 %   serves as an explicit end-of-data marker and ensures that BUF contains a
@@ -70,6 +74,16 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 		coder.varsize('ctx.err', [1,32]);
 	end
 
+	% Define buffer signature
+	bsig = bitshift(uint16(240),8) + 42;
+	if nargin >= 2 && ~isempty(sig)
+		if isscalar(sig) && uint16(sig) < 240
+			bsig = bsig - 42 + uint16(sig);
+		else
+			ctx = fail(ctx, 'invalidSig');
+		end
+	end
+
 	% Configure encoder byte order
 	if nargin == 3 && ~isempty(byteOrder)
 		if byteOrder == 'B' || byteOrder == 'L'
@@ -80,21 +94,8 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 		end
 	end
 
-	% Encode signature
-	if nargin < 2 || isempty(sig)
-		ctx = append(ctx, uint16(42));
-	else
-		if ~isinteger(sig)
-			sig = uint16(sig);
-		end
-		if isscalar(sig) && sig ~= swapbytes(sig)
-			ctx = append(ctx, sig);
-		else
-			ctx = fail(ctx, 'invalidSig');
-		end
-	end
-
-	% Encode v and append padding
+	% Encode signature, v, and padding
+	ctx = append(ctx, bsig);
 	ctx = encAny(ctx, v);
 	pad = uint8(4 - bitand(ctx.len,3));
 	ctx = appendBytes(ctx, repmat(bitcmp(pad),pad,1));

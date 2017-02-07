@@ -23,9 +23,9 @@ function tests = mxencodetest(coverage)
 end
 
 function setup(tc)
-	tc.TestData.byteOrder = '';
-	tc.TestData.sig = uint16(42);
 	tc.TestData.cgen = false;
+	tc.TestData.sig = [];
+	tc.TestData.byteOrder = '';
 end
 
 function testEmpty(tc)
@@ -185,25 +185,28 @@ function testStruct(tc)
 end
 
 function testSig(tc)
-	buf16 = mxencode(123, uint16(1));
-	buf64 = mxencode(123, uint64(1));
+	tc.TestData.sig = 0;
+	veq(tc, [], 1);
 
-	tc.verifyEqual(mxdecode(buf16, uint16(1)), 123);
-	tc.verifyEqual(mxdecode(buf64, uint64(1)), 123);
-	tc.verifyNotEqual(buf16, buf64);
+	tc.TestData.sig = 239;
+	veq(tc, [], 1);
 
-	tc.verifyError(@() mxdecode(buf16), 'mxdecode:invalidSig');
-	tc.verifyError(@() mxdecode(buf16, uint64(1)), 'mxdecode:invalidSig');
-	tc.verifyError(@() mxdecode(buf64, uint16(1)), 'mxdecode:invalidTag');
+	byteOrder = tc.TestData.byteOrder;
+	tc.verifyNotEqual(mxencode([], 0, byteOrder), mxencode([], 1, byteOrder));
+
+	tc.TestData.sig = 240;
+	encErr(tc, [], 'invalidSig');
+
+	tc.TestData.sig = 239;
+	buf = mxencode([], 0, byteOrder);
+	decErr(tc, buf, 'invalidSig', []);
+	tc.verifyEqual(mxdecode(buf, 0), []);
 end
 
 function testError(tc)
 	tc.TestData.byteOrder = 'X';
 	encErr(tc, [], 'invalidByteOrder');
 	tc.TestData.byteOrder = '';
-	tc.TestData.sig = uint16(0);
-	encErr(tc, [], 'invalidSig');
-	tc.TestData.sig = uint16(42);
 
 	encErr(tc, @(x) x, 'unsupported');
 	encErr(tc, sparse(4294967296,1,1), 'numelRange');
@@ -214,16 +217,21 @@ function testError(tc)
 
 	decErr(tc, uint8([]), 'invalidBuf');
 	decErr(tc, uint8([0;1;0]), 'invalidBuf');
-	decErr(tc, uint8([0;0;0;0]), 'invalidSig');
-	decErr(tc, uint8([0;1;0;0]), 'invalidSig');
+	decErr(tc, uint8([0;0;0;0]), 'invalidPad');
+	decErr(tc, uint8([0;0;0;254]), 'invalidSig');
+	decErr(tc, uint8([0;1;0;254]), 'invalidSig');
+	decErr(tc, uint8([240;240;0;254]), 'invalidSig');
+	decErr(tc, uint8([240;241;0;254]), 'invalidSig');
 
-	buf = mxencode('abc');
+	v = 'abc';
+	buf = mxencode(v);
 	buf(4) = 255;
-	decErr(tc, buf, 'invalidBuf');
+	decErr(tc, buf, 'invalidBuf', v);
 
-	buf = mxencode(sparse(1,0));
+	v = sparse(1,0);
+	buf = mxencode(v);
 	buf(3) = bitor(buf(3), 31);
-	decErr(tc, buf, 'invalidTag');
+	decErr(tc, buf, 'invalidTag', v);
 end
 
 function testByteOrder(tc)
@@ -272,7 +280,7 @@ function veq(tc, v, len)
 	if nargin == 3
 		tc.verifyNumElements(buf, 2+len+double(bitcmp(buf(end))));
 	end
-	tc.verifyEqual(mxdecode(buf), v);
+	tc.verifyEqual(mxdecode(buf, tc.TestData.sig), v);
 end
 
 function encErr(tc, v, errid)
@@ -282,18 +290,19 @@ function encErr(tc, v, errid)
 		tc.verifyEmpty(buf);
 		tc.verifyEqual(err, errid);
 	else
-		if ~contains(errid, ':')
-			errid = ['mxencode:' errid];
-		end
-		tc.verifyError(f, errid);
+		tc.verifyError(f, ['mxencode:' errid]);
 	end
 end
 
-function decErr(tc, buf, errid)
-	if true
-		tc.verifyError(@() mxdecode(buf), ['mxdecode:' errid]);
+function decErr(tc, buf, errid, v)
+	if tc.TestData.cgen
+		if nargin < 4
+			v = [];
+		end
+		[v,err] = mxdecode(buf, tc.TestData.sig, v);
+		tc.verifyEqual(err, errid);
 	else
-		tc.verifyEmpty(mxdecode(v));
+		tc.verifyError(@() mxdecode(buf, tc.TestData.sig), ['mxdecode:' errid]);
 	end
 end
 

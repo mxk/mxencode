@@ -2,20 +2,22 @@
 %
 %   V = MXDECODE(BUF) decodes the original value V from uint8 column vector BUF.
 %
-%   V = MXDECODE(BUF,SIG) uses the specified SIG to validate BUF signature and
-%     determine the correct byte order for decoding.
+%   V = MXDECODE(BUF,SIG) uses the specified SIG to validate BUF signature. If
+%     SIG is not the same value that was provided to MXENCODE, decoding fails
+%     with 'mxdecode:invalidSig' error.
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V) activates standalone mode for generating C/C++
-%     code with MATLAB Coder. The id of any error encountered during decoding is
-%     returned in ERR. The same V must be used for input and output. An error is
-%     returned if BUF does not contain a valid encoding of V. In other words, V
-%     specifies the required BUF format and BUF provides the data.
+%     code with MATLAB Coder. If an error is encountered during decoding, ERR
+%     will contain its message id and V may be partially modified. The same V
+%     must be used for input and output. An error is returned if BUF does not
+%     contain a valid encoding of V. In other words, V specifies the required
+%     BUF format and BUF provides the data.
 %
-%   [V,ERR] = MXDECODE(BUF,SIG,V,UBOUND) uses the specified UBOUND as the upper
-%     bound on the number of elements and struct fields for any value in BUF.
-%     You must use the same UBOUND for all MXDECODE calls within the same
-%     program or you'll get the following error: "The name 'MxDecCtx' has
-%     already been defined using a different type." The default is Inf.
+%   [V,ERR] = MXDECODE(BUF,SIG,V,UBOUND) uses UBOUND as the upper bound on the
+%     number of elements and struct fields for any value in BUF to generate more
+%     efficient code. You must use the same UBOUND for all MXDECODE calls within
+%     the same program or you'll get the following error: "The name 'MxDecCtx'
+%     has already been defined using a different type." The default is Inf.
 %
 %   The paragraphs below apply only to standalone mode:
 %
@@ -83,14 +85,19 @@
 %   Written by Maxim Khitrov (February 2017)
 
 function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
-	narginchk(1, 4);
 	cgen = int32(nargout == 2);
+	if cgen
+		narginchk(3, 4);
+	else
+		narginchk(1, 2);
+		v = [];
+	end
 	if nargin < 4
 		ubound = Inf;
 	end
 	ctx = struct( ...
-		'buf',    buf, ...
-		'pos',    int32(1), ...
+		'buf',    zeros(0, 1, 'uint8'), ...
+		'pos',    int32(3), ...
 		'swap',   false, ...
 		'cgen',   false(1 - cgen), ...          % Empty is compile-time true
 		'ubound', zeros(int32(ubound), 0), ...  % Size is compile-time constant
@@ -98,43 +105,54 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 	);
 	if cgen
 		coder.cstructname(ctx, 'MxDecCtx');
+		coder.varsize('ctx.buf');
 		coder.varsize('ctx.err', [1,32]);
-	else
-		v = [];
 	end
 
 	% Check buf size and format
 	n = int32(numel(buf));
-	if ~(n && ~bitand(n,3) && isa(buf,'uint8') && isreal(buf) && iscolumn(buf))
+	if ~n || bitand(n,3) || ~isa(buf,'uint8') || ~isreal(buf) || ~iscolumn(buf)
 		ctx = fail(ctx, 'invalidBuf');
+		err = ctx.err;
+		return;
+	end
+	pad = int32(bitcmp(buf(n)));
+	if cgen && ~coder.target('MATLAB')
+		% Black magic to force the evaluation of n and pad here. Coder has an
+		% annoying habit of delaying or inlining such evaluations in generated
+		% code, even when the resulting code is (much!) slower. In the worst
+		% case, it copies buf to keep an "old" version around for such delayed
+		% evaluations (even though buf is never modified). Verify that the
+		% function 'emxCopyStruct_MxDecCtx' does not exist in the generated code
+		% after making any changes and look for other buf copies as well (b_buf,
+		% c_buf, ctx_buf, etc.).
+		coder.ceval('(void)', coder.ref(n), coder.ref(pad));
+	end
+	if ~pad || pad > 4 || any(buf(n-pad+1:n-1) ~= buf(n))
+		ctx = fail(ctx, 'invalidPad');
+		err = ctx.err;
+		return;
 	end
 
-	% Verify signature and determine byte order
-	if nargin < 2 || isempty(sig)
-		native = uint16(42);
-	else
-		native = sig;
+	% Verify signature and detect byte order
+	fver = uint16(240);
+	usig = uint16(42);
+	if nargin >= 2 && ~isempty(sig)
+		usig = uint16(sig);
 	end
-	sigLen = cid2bpe(cls2cid(class(native)));  % Compile-time constant
-	sigOk = false;
-	if valid(ctx) && 2 <= sigLen && sigLen < n
-		bufSig = typecast(buf(1:sigLen), class(native));
-		ctx.pos = sigLen + 1;
-		ctx.swap = (bufSig == swapbytes(native));
-		sigOk = (bufSig == native) ~= ctx.swap;
-	end
-	if ~sigOk
+	if usig >= 240 || ~((buf(1) == usig && buf(2) == fver) || ...
+			(buf(1) == fver && buf(2) == usig))
 		ctx = fail(ctx, 'invalidSig');
+		err = ctx.err;
+		return;
 	end
+	ctx.swap = (typecast(buf(1:2),'uint16') ~= bitshift(fver,8)+usig);
 
-	% Decode and verify padding
-	if valid(ctx)
-		[ctx,v] = decNext(ctx, v);
-		pad = int32(bitcmp(buf(n)));
-		if ~pad || pad > 4 || ctx.pos+pad-1 ~= n || ...
-				any(buf(ctx.pos:n-1) ~= buf(n))
-			ctx = fail(ctx, 'invalidPad');
-		end
+	% Decode
+	ctx.buf = buf;
+	[ctx,v] = decNext(ctx, v);
+	if ctx.pos ~= n - pad + 1
+		ctx = fail(ctx, 'invalidBuf');
 	end
 	err = ctx.err;
 end
@@ -373,13 +391,6 @@ function [ctx,cid,vsz] = decTag(ctx)
 	cid = bitand(ctx.buf(i), 31);
 	fmt = bitshift(ctx.buf(i), -5);
 	if isempty(ctx.cgen) && ~coder.target('MATLAB')
-		% Black magic to force the evaluation of cid and fmt. Coder has an
-		% annoying habit of delaying or inlining such evaluations in generated
-		% code, even when the resulting code is (much!) slower. In the worst
-		% case, it copies entire ctx and buf to keep "old" versions around for
-		% delayed evaluations (even though no code path ever writes to buf).
-		% Verify that the function 'emxCopyStruct_MxDecCtx' does not exist in
-		% the generated code after making any changes.
 		coder.ceval('(void)', coder.ref(cid), coder.ref(fmt));
 	end
 	if cid < 1 || 17 < cid
