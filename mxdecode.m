@@ -211,7 +211,7 @@ function [ctx,v] = decNext(ctx, v)
 		return;
 	end
 	if valid(ctx)
-		if isscalar(v)  %size(v,1) == 1 && size(v,2) == 1
+		if isscalar(v)
 			if ~isscalar(tmp)
 				ctx = fail(ctx, 'nonScalar');
 			elseif iscell(v)
@@ -224,7 +224,7 @@ function [ctx,v] = decNext(ctx, v)
 		elseif size(v,1) == 1 && size(v,2) ~= 1
 			v = reshape(tmp, 1, numel(tmp));
 		elseif size(v,1) ~= 1 && size(v,2) ~= 1  % Coder unhappy with an else
-			v = reshape(tmp, vsz(1), vsz(2));
+			v = reshape(tmp, vsz);
 		end
 	end
 end
@@ -323,7 +323,7 @@ function [ctx,out] = decStruct(ctx, v, n)
 	coder.varsize('bfields{:}', [1,63]);  % namelengthmax
 	[ctx,bfields] = decNext(ctx, bfields);
 	out = repmat(v(1), n, 1);
-	err = true;
+	err = ~isempty(vfields);
 
 	% Decode data for matching fields, ignore struct fields that weren't
 	% encoded, skip encoded fields that aren't in the struct. At least one field
@@ -476,29 +476,29 @@ function ctx = fail(ctx, id)
 	end
 	switch id
 	case 'classMismatch'
-		msg = 'encoding does not match expected class';
+		msg = 'Encoding does not match expected class.';
 	case 'invalidBuf'
-		msg = 'invalid buffer format';
+		msg = 'Invalid buffer format.';
 	case 'invalidNdims'
-		msg = 'invalid number of dimensions';
+		msg = 'Invalid number of dimensions.';
 	case 'invalidSig'
-		msg = 'invalid buffer signature';
+		msg = 'Invalid buffer signature.';
 	case 'invalidPad'
-		msg = 'invalid buffer padding';
+		msg = 'Invalid buffer padding.';
 	case 'ubound'
-		msg = 'number of elements exceeds ubound';
+		msg = 'Number of elements exceeds ubound.';
 	case 'nonScalar'
-		msg = 'decoded value is not a scalar';
+		msg = 'Decoded value is not a scalar.';
 	case 'notNumeric'
-		msg = 'encoded class is not numeric';
+		msg = 'Encoded class is not numeric.';
 	case 'unicodeChar'
-		msg = '16-bit characters are not supported';
+		msg = '16-bit characters are not supported.';
 	case 'emptyCell'
-		msg = 'cell does not contain any elements';
+		msg = 'Cell does not contain any elements.';
 	case 'invalidStruct'
-		msg = 'invalid struct or field name mismatch';
+		msg = 'Invalid struct or field name mismatch.';
 	case 'invalidTag'
-		msg = 'tag specifies an unknown class';
+		msg = 'Tag specifies an unknown class.';
 	otherwise
 		msg = '';
 	end

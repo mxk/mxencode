@@ -5,10 +5,10 @@
 %     uint8 column vector. Use MXDECODE to extract the original value from BUF.
 %
 %   BUF = MXENCODE(V,SIG) encodes the specified SIG into the buffer signature.
-%     SIG must be an integer in the range [0,239]. It may be used to provide
+%     SIG must be an integer in the range [0,239] and may be used to provide
 %     application-specific information about buffer contents. The default
-%     signature is the answer to the ultimate question of life, the universe,
-%     and everything.
+%     value, used if SIG is unspecified or empty, is the answer to the ultimate
+%     question of life, the universe, and everything.
 %
 %   BUF = MXENCODE(V,SIG,BYTEORDER) encodes V using the specified BYTEORDER,
 %     which must be one of '', 'B', or 'L' for native, big-endian, or
@@ -19,7 +19,7 @@
 %     be omitted. If an error is encountered during encoding, ERR will contain
 %     its message id and BUF will be empty.
 %
-%   MXENCODE and MXDECODE were designed for use with MATLAB Coder to serve as an
+%   MXENCODE and MXDECODE were designed for use with MATLAB Coder to provide an
 %   efficient data exchange format between MATLAB and non-MATLAB code. Multiple
 %   restrictions are placed on the encoded data when these functions are
 %   compiled for standalone use. See MXDECODE for more info.
@@ -34,8 +34,8 @@
 %   order detection, the low byte must be less than 240.
 %
 %   VALUE is a recursive encoding of V based on its class. The first byte is a
-%   tag in which the lower 5 bits specify the class and the upper 3 bits, taken
-%   as an integer shifted right by 5, specify size encoding format:
+%   tag in which the lower 5 bits specify the class and the upper 3 bits specify
+%   size encoding format as follows (value of tag shifted right by 5):
 %     0 = scalar (1x1):                          [ TAG{1} DATA ]
 %     1 = column vector (Mx1) with M < 256:      [ TAG{1} M{1} DATA ]
 %     2 = row vector (1xN) with N < 256:         [ TAG{1} N{1} DATA ]
@@ -213,14 +213,12 @@ function ctx = encTag(ctx, v, cls)
 	end
 	maxsz = max(size(v));  % Not the same as length(v) for empty v
 	if maxsz > intmax('uint8') || ~ismatrix(v)
-		if ndims(v) > intmax('uint8')
+		if ndims(v) > intmax('uint8') || (isempty(ctx.cgen) && ndims(v) > 2)
 			ctx = fail(ctx, 'ndimsRange');
 		end
-		if numel(v) > intmax
+		sz = size(v);
+		if numel(v) > intmax || (isempty(v) && prod(sz(sz ~= 0)) > intmax)
 			ctx = fail(ctx, 'numelRange');
-		end
-		if maxsz > intmax  % Empty matrix may violate this
-			ctx = fail(ctx, 'maxSize');
 		end
 		cid = minUint(maxsz);
 		ctx = appendBytes(ctx, [tag+bitshift(4+cid,5), uint8(ndims(v))]);
@@ -272,25 +270,23 @@ function ctx = fail(ctx, id)
 		ctx.buf = zeros(0, 1, 'uint8');
 	end
 	if isempty(ctx.cgen)
-		return;
+		return;  % TODO: Still throw from mex files?
 	end
 	switch id
 	case 'invalidByteOrder'
-		msg = 'byte order must be one of '''', ''B'', or ''L''';
+		msg = 'Byte order must be one of '''', ''B'', or ''L''.';
 	case 'invalidSig'
-		msg = 'invalid buffer signature';
+		msg = 'Invalid buffer signature.';
 	case 'overflow'
-		msg = 'buffer size limit exceeded';
+		msg = 'Buffer size limit exceeded.';
 	case 'unsupported'
-		msg = 'unsupported data type';
+		msg = 'Unsupported data type.';
 	case 'unicodeChar'
-		msg = '16-bit characters are not supported';
+		msg = '16-bit characters are not supported.';
 	case 'ndimsRange'
-		msg = 'ndims exceeds uint8 range';
+		msg = 'Number of dimensions exceeds uint8 range.';
 	case 'numelRange'
-		msg = 'numel exceeds int32 range';
-	case 'maxSize'
-		msg = 'max(size) exceeds int32 range';
+		msg = 'Number of elements exceeds int32 range.';
 	case ''
 		msg = '';
 	end

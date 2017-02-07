@@ -32,38 +32,46 @@ function testEmpty(tc)
 	s = [0,0];               veq(tc, reshape([],s), 1);
 	s = [0,1];               veq(tc, reshape([],s), 1+1);
 	s = [1,0];               veq(tc, reshape([],s), 1+1);
-	s = [0:2];               veq(tc, reshape([],s), 1+1+numel(s));
-	s = [0:254];             veq(tc, reshape([],s), 1+1+numel(s));
 	s = [0,256];             veq(tc, reshape([],s), 1+1+numel(s)*2);
 	s = [256,0];             veq(tc, reshape([],s), 1+1+numel(s)*2);
 	s = [0,intmax('int32')]; veq(tc, reshape([],s), 1+1+numel(s)*4);
 	s = [intmax('int32'),0]; veq(tc, reshape([],s), 1+1+numel(s)*4);
+
+	if ~tc.TestData.cgen
+		s = [0:2];             veq(tc, reshape([],s), 1+1+numel(s));
+		s = [0,1,255];         veq(tc, reshape([],s), 1+1+numel(s));
+		s = [0 ones(1,253) 2]; veq(tc, reshape([],s), 1+1+numel(s));
+		s = [1 zeros(1,254)];  veq(tc, reshape([],s), 1+1+numel(s));
+	end
 end
 
 function testSizeFormat(tc)
 	i = uint8(255);
-	s = [0,0];         veq(tc, randi(i,s,'uint8'), 1+prod(s));
-	s = [0,1];         veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
-	s = [1,0];         veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
-	s = [1,1];         veq(tc, randi(i,s,'uint8'), 1+prod(s));
-	s = [1,2];         veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
-	s = [1,3];         veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
-	s = [1,4];         veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
-	s = [1,5];         veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
-	s = [1,255];       veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
-	s = [255,1];       veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
-	s = [2,3];         veq(tc, randi(i,s,'uint8'), 1+2+prod(s));
-	s = [255,255];     veq(tc, randi(i,s,'uint8'), 1+2+prod(s));
-	s = [2,3,4];       veq(tc, randi(i,s,'uint8'), 1+1+numel(s)+prod(s));
-	s = [2,3,2,4];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)+prod(s));
-	s = [1,65535];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
-	s = [65535,1];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
-	s = [256,256];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
-	s = [2,256,4];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
-	s = [2,256,1,2];   veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
-	s = [1,65536];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*4+prod(s));
-	s = [65536,1];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*4+prod(s));
-	s = [1,65536,1,2]; veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*4+prod(s));
+	s = [0,0];     veq(tc, randi(i,s,'uint8'), 1+prod(s));
+	s = [0,1];     veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
+	s = [1,0];     veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
+	s = [1,1];     veq(tc, randi(i,s,'uint8'), 1+prod(s));
+	s = [1,2];     veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
+	s = [1,3];     veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
+	s = [1,4];     veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
+	s = [1,5];     veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
+	s = [1,255];   veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
+	s = [255,1];   veq(tc, randi(i,s,'uint8'), 1+1+prod(s));
+	s = [2,3];     veq(tc, randi(i,s,'uint8'), 1+2+prod(s));
+	s = [255,255]; veq(tc, randi(i,s,'uint8'), 1+2+prod(s));
+	s = [1,65535]; veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
+	s = [65535,1]; veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
+	s = [256,256]; veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
+	s = [1,65536]; veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*4+prod(s));
+	s = [65536,1]; veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*4+prod(s));
+
+	if ~tc.TestData.cgen
+		s = [2,3,4];       veq(tc, randi(i,s,'uint8'), 1+1+numel(s)+prod(s));
+		s = [2,3,2,4];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)+prod(s));
+		s = [2,256,4];     veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
+		s = [2,256,1,2];   veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*2+prod(s));
+		s = [1,65536,1,2]; veq(tc, randi(i,s,'uint8'), 1+1+numel(s)*4+prod(s));
+	end
 end
 
 function testNumeric(tc)
@@ -135,15 +143,27 @@ function testChar(tc)
 end
 
 function testCell(tc)
-	v = {};               veq(tc, v, 1);
-	v = {{}};             veq(tc, v, 1 + 1);
-	v = {{{}}};           veq(tc, v, 1 + 1 + 1);
-	v = {1};              veq(tc, v, 1 + 1+8);
-	v = {1,'a'};          veq(tc, v, 1+1 + 1+8 + 1+1);
-	v = {{1}};            veq(tc, v, 1 + 1 + 1+8);
-	v = {{{}, 1}};        veq(tc, v, 1 + 1+1 + 1 + 1+8);
-	v = {{1},'a'};        veq(tc, v, 1+1 + 1+1+8 + 1+1);
-	v = {{'a'},{1,true}}; veq(tc, v, 1+1 + 1+1+1 + 1+1+1+8+1+1);
+	if tc.TestData.cgen
+		f = @(tc, v, err, len) decErr(tc, ...
+				mxencode(v, tc.TestData.sig, tc.TestData.byteOrder), err, v);
+	else
+		f = @(tc, v, err, len) veq(tc, v, len);
+	end
+
+	v = {1};       veq(tc, v, 1 + 1+8);
+	v = {1,2};     veq(tc, v, 1+1 + 1+8 + 1+8);
+	v = {1,2;4,5}; veq(tc, v, 1+2 + 1+8 + 1+8 + 1+8 + 1+8);
+	v = {{1}};     veq(tc, v, 1 + 1 + 1+8);
+	v = {{1,2}};   veq(tc, v, 1 + 1+1 + 1+8 + 1+8);
+
+	v = {};               f(tc, v, 'emptyCell',     1);
+	v = {{}};             f(tc, v, 'emptyCell',     1 + 1);
+	v = {{{}}};           f(tc, v, 'emptyCell',     1 + 1 + 1);
+	v = {1,'a'};          f(tc, v, 'notNumeric',    1+1 + 1+8 + 1+1);
+	v = {{1},'a'};        f(tc, v, 'classMismatch', 1+1 + 1+1+8 + 1+1);
+	v = {{{}, 1}};        f(tc, v, 'emptyCell',     1 + 1+1 + 1 + 1+8);
+	v = {{'a'},{1,2}};    f(tc, v, 'classMismatch', 1+1 + 1+1+1 + 1+1+1+8+1+8);
+	v = {{'a'},{1,true}}; f(tc, v, 'classMismatch', 1+1 + 1+1+1 + 1+1+1+8+1+1);
 end
 
 function testStruct(tc)
@@ -153,8 +173,10 @@ function testStruct(tc)
 	v = repmat(struct(), 2, 1);
 	veq(tc, v, 1+1 + 1);
 
-	v = struct([]);
-	veq(tc, v, 1 + 1);
+	if ~tc.TestData.cgen
+		v = struct([]);
+		veq(tc, v, 1 + 1);
+	end
 
 	v = struct('a',1);
 	veq(tc, v, 1 + 1+1+1 + 1+8);
@@ -165,23 +187,27 @@ function testStruct(tc)
 	v = struct('a',1,'b',2);
 	veq(tc, v, 1 + 1+1+1+1+1+1 + 1+8+1+8);
 
-	v = struct('abc',struct('xyz',{}));
-	veq(tc, v, 1 + 1+1+1+3 + 1 + 1+1+1+3);
+	if ~tc.TestData.cgen
+		v = struct('abc',struct('xyz',{}));
+		veq(tc, v, 1 + 1+1+1+3 + 1 + 1+1+1+3);
 
-	v = struct('abc',struct('xyz',{{}}));
-	veq(tc, v, 1 + 1+1+1+3 + 1 + 1+1+1+3 + 1);
+		v = struct('abc',struct('xyz',{{}}));
+		veq(tc, v, 1 + 1+1+1+3 + 1 + 1+1+1+3 + 1);
+	end
 
 	v = struct('a',{{1}},'b',2);
 	veq(tc, v, 1 + 1+1+1+1+1+1 + 1+1+8 + 1+8);
 
-	v = struct('a',{1,2},'b',{2,[]});
-	veq(tc, v, 1+1 + 1+1+1+1+1+1 + 1+8+1+8 + 1+8+1);
+	v = struct('a',{1,2},'b',{[],2});
+	veq(tc, v, 1+1 + 1+1+1+1+1+1 + 1+8+1+8 + 1+1+8);
 
-	v = struct('a',{1,2},'b',{2,[]},'f2',{struct(),[1,2]});
-	veq(tc, v, 1+1 + 1+1+1+1+1+1+1+1+2 + 1+8+1+8 + 1+8+1 + 1+1+1+1+2*8);
+	if ~tc.TestData.cgen
+		v = struct('a',{1,2},'b',{2,[]},'f2',{struct(),[1,2]});
+		veq(tc, v, 1+1 + 1+1+1+1+1+1+1+1+2 + 1+8+1+8 + 1+8+1 + 1+1+1+1+2*8);
 
-	v = struct('a',{[],1;2,[]},'bc',{3,[];[],{4,struct('x',[])}});
-	veq(tc, v, 1+2 + 1+1+1+1+1+1+2 + 1+1+8+1+8+1 + 1+8+1+1 + 1+1+1+8+1+1+1+1+1);
+		v = struct('a',{[],1;2,[]},'bc',{3,[];[],{4,struct('x',[])}});
+		veq(tc, v, 1+2 + 1+1+1+1+1+1+2 + 1+1+8+1+8+1 + 1+8+1+1 + 1+1+1+8+1+1+1+1+1);
+	end
 end
 
 function testSig(tc)
@@ -209,11 +235,17 @@ function testError(tc)
 	tc.TestData.byteOrder = '';
 
 	encErr(tc, @(x) x, 'unsupported');
+	encErr(tc, reshape([], [1 zeros(1, 255)]), 'ndimsRange');
 	encErr(tc, sparse(4294967296,1,1), 'numelRange');
-	encErr(tc, reshape([], 0:255), 'ndimsRange');
 	encErr(tc, sparse(65536,65536), 'numelRange');
-	encErr(tc, reshape([], [0,intmax('uint32')]), 'maxSize');
+	encErr(tc, reshape([], [0,intmax('uint32')]), 'numelRange');
 	encErr(tc, zeros(268435456,1), 'overflow');
+
+	if tc.TestData.cgen
+		encErr(tc, reshape([], 0:2), 'ndimsRange');
+	else
+		encErr(tc, reshape([], 0:254), 'numelRange');
+	end
 
 	decErr(tc, uint8([]), 'invalidBuf');
 	decErr(tc, uint8([0;1;0]), 'invalidBuf');
@@ -263,7 +295,7 @@ function testCgen(tc)
 	testNumeric(tc);
 	testComplex(tc);
 	testLogical(tc);
-	testSparse(tc);
+	%testSparse(tc);  % Not supported
 	testChar(tc);
 	testCell(tc);
 	testStruct(tc);
@@ -280,7 +312,17 @@ function veq(tc, v, len)
 	if nargin == 3
 		tc.verifyNumElements(buf, 2+len+double(bitcmp(buf(end))));
 	end
-	tc.verifyEqual(mxdecode(buf, tc.TestData.sig), v);
+	if tc.TestData.cgen
+		if ndims(v) > 2
+			[m,n] = size(v);
+			v = reshape(v, m, n);
+		end
+		[out,err] = mxdecode(buf, tc.TestData.sig, v);
+		tc.verifyEqual(out, v);
+		tc.verifyEmpty(err);
+	else
+		tc.verifyEqual(mxdecode(buf, tc.TestData.sig), v);
+	end
 end
 
 function encErr(tc, v, errid)
