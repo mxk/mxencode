@@ -2,8 +2,8 @@
 %
 %   V = MXDECODE(BUF) decodes the original value V from uint8 column vector BUF.
 %
-%   V = MXDECODE(BUF,SIG) uses the specified SIG to validate BUF signature. If
-%     SIG is not the same value that was provided to MXENCODE, decoding fails
+%   V = MXDECODE(BUF,SIG) uses the specified SIG to validate buffer signature.
+%     If SIG is not the same value that was provided to MXENCODE, decoding fails
 %     with 'mxdecode:invalidSig' error.
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V) activates standalone mode for generating C/C++
@@ -22,11 +22,11 @@
 %   The paragraphs below apply only to standalone mode:
 %
 %   All non-scalar values in V, including V itself, must be declared as
-%   variable-size using coder.varsize. Scalar values must not be declared as
+%   variable-size using CODER.VARSIZE. Scalar values must not be declared as
 %   such. You may specify an explicit upper bound for varying dimensions, but
-%   you may not use the dims argument to coder.varsize and you may not modify V
-%   between coder.varsize declarations and the call to MXDECODE. In general,
-%   your program should follow this pattern:
+%   you may not use the dims argument to CODER.VARSIZE and you may not modify V
+%   between CODER.VARSIZE declarations and the call to MXDECODE. In general,
+%   your program should have the following structure:
 %
 %     function [buf,out1,out2,...,outN] = compute(buf, in1, in2, ..., inN)
 %         state = struct( ...
@@ -38,7 +38,7 @@
 %         );
 %
 %         % Declare all variable-size fields
-%         coder.varsize('state.rowvec', 'state.colvec', 'state.mat', ...
+%         coder.varsize('state.rowvec', 'state.colvec', 'state.matrix', ...
 %                       'state.cell');
 %
 %         % Decode previous state
@@ -55,8 +55,8 @@
 %         [buf,~] = mxencode(state);
 %     end
 %
-%   Only 2D arrays are supported. Any dimensions in BUF beyond the first two are
-%   collapsed into the second one.
+%   Only 2-D arrays are supported. Any dimensions in BUF beyond the first two
+%   are collapsed into the second one.
 %
 %   Sparse and 16-bit Unicode char arrays are not supported (Coder restrictions
 %   as of R2016b).
@@ -65,19 +65,19 @@
 %   structs. Structs and homogeneous cells must contain at least one element
 %   which determines the type of data that can be assigned to each field/cell.
 %   Variable-size structs and cells must contain at least two elements to be
-%   correctly declared as such using the default coder.varsize dims logic.
+%   correctly declared as such using the default CODER.VARSIZE dims logic.
 %
-%   Struct decoding is considered successful if at least one of the fields in V
-%   and BUF match, regardless of the order. Fields in V that are not in BUF are
-%   ignored. Fields in BUF that are not in V are skipped. This allows struct
-%   layout to be modified and still be decoded from an old-layout BUF.
+%   Struct decoding is considered successful if V has no fields or if at least
+%   one of the fields in V and BUF match using strcmp. Fields in V that are not
+%   in BUF are ignored. Fields in BUF that are not in V are skipped. This allows
+%   struct layout to be modified and still be decoded from an old-layout BUF.
 %
 %   "Dimension N is fixed on the left-hand side but varies on the right" and
-%   similar errors are most likely due to incorrect coder.varsize declarations.
+%   similar errors are most likely due to incorrect CODER.VARSIZE declarations.
 %   The decoder considers any dimension for which size(v,dim) ~= 1 as varying,
-%   which is the same heuristic used by coder.varsize without an explicit dims
+%   which is the same heuristic used by CODER.VARSIZE without an explicit dims
 %   argument. Certain empty arrays, such as '', have size 1x0 by default, and
-%   are considered row vectors by coder.varsize. You must reshape them to 0x1 or
+%   are considered row vectors by CODER.VARSIZE. You must reshape them to 0x1 or
 %   0x0 to change the varying dimension(s).
 %
 %   See also MXENCODE, CODER.VARSIZE.
@@ -471,9 +471,6 @@ function ctx = fail(ctx, id)
 		ctx.err = id;
 		ctx.pos = intmax;
 	end
-	if isempty(ctx.cgen)
-		return;
-	end
 	switch id
 	case 'classMismatch'
 		msg = 'Encoding does not match expected class.';
@@ -500,9 +497,11 @@ function ctx = fail(ctx, id)
 	case 'invalidTag'
 		msg = 'Tag specifies an unknown class.';
 	otherwise
-		msg = '';
+		msg = 'Unknown error.';
 	end
-	error([mfilename ':' id], msg);
+	if ~isempty(ctx.cgen) || coder.target('MEX')
+		error([mfilename ':' id], msg);
+	end
 end
 
 function cid = cls2cid(cls)

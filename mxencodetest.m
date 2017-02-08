@@ -135,10 +135,14 @@ function testChar(tc)
 	v = char([0,1;2,3]); veq(tc, v, 1+2+numel(v));
 	v = char([1:255]);   veq(tc, v, 1+1+numel(v));
 	v = char([0:255]');  veq(tc, v, 1+1+2*2+numel(v));
+
 	if ~tc.TestData.cgen
+		v = char([256]);     veq(tc, v, 1+numel(v)*2);
 		v = char([65535]);   veq(tc, v, 1+numel(v)*2);
 		v = char([0,65535]); veq(tc, v, 1+1+numel(v)*2);
 		v = char([0:65535]); veq(tc, v, 1+1+4*2+numel(v)*2);
+	else
+		v = char(256); decErr(tc, mxencode(v), 'unicodeChar', v);
 	end
 end
 
@@ -234,17 +238,17 @@ function testError(tc)
 	encErr(tc, [], 'invalidByteOrder');
 	tc.TestData.byteOrder = '';
 
-	encErr(tc, @(x) x, 'unsupported');
-	encErr(tc, reshape([], [1 zeros(1, 255)]), 'ndimsRange');
-	encErr(tc, sparse(4294967296,1,1), 'numelRange');
-	encErr(tc, sparse(65536,65536), 'numelRange');
-	encErr(tc, reshape([], [0,intmax('uint32')]), 'numelRange');
-	encErr(tc, zeros(268435456,1), 'overflow');
+	encErr(tc, @(x) x, 'unsupportedClass');
+	encErr(tc, reshape([], [1 zeros(1, 255)]), 'ndimsLimit');
+	encErr(tc, sparse(4294967296,1,1), 'numelLimit');
+	encErr(tc, sparse(65536,65536), 'numelLimit');
+	encErr(tc, reshape([], [0,intmax('uint32')]), 'numelLimit');
+	encErr(tc, zeros(268435456,1), 'bufLimit');
 
 	if tc.TestData.cgen
-		encErr(tc, reshape([], 0:2), 'ndimsRange');
+		encErr(tc, reshape([], 0:254), 'ndimsLimit');
 	else
-		encErr(tc, reshape([], 0:254), 'numelRange');
+		encErr(tc, reshape([], 0:254), 'numelLimit');
 	end
 
 	decErr(tc, uint8([]), 'invalidBuf');
@@ -309,7 +313,7 @@ function veq(tc, v, len)
 	else
 		buf = mxencode(v, tc.TestData.sig, tc.TestData.byteOrder);
 	end
-	if nargin == 3
+	if nargin == 3 && ~isempty(buf)
 		tc.verifyNumElements(buf, 2+len+double(bitcmp(buf(end))));
 	end
 	if tc.TestData.cgen

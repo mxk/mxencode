@@ -17,7 +17,8 @@
 %   [BUF,ERR] = MXENCODE(V,SIG,BYTEORDER) activates standalone mode for
 %     generating C/C++ code with MATLAB Coder. SIG and BYTEORDER arguments may
 %     be omitted. If an error is encountered during encoding, ERR will contain
-%     its message id and BUF will be empty.
+%     its message id and BUF will be empty. Compiled MEX functions will still
+%     throw errors for testing purposes.
 %
 %   MXENCODE and MXDECODE were designed for use with MATLAB Coder to provide an
 %   efficient data exchange format between MATLAB and non-MATLAB code. Multiple
@@ -31,7 +32,7 @@
 %   user-specified value (42 by default). The high byte is the buffer format
 %   version. It is incremented by one for all backward-incompatible changes to
 %   the encoding format. The current version is 240. To support unambiguous byte
-%   order detection, the low byte must be less than 240.
+%   order detection, the low byte must always be less than 240.
 %
 %   VALUE is a recursive encoding of V based on its class. The first byte is a
 %   tag in which the lower 5 bits specify the class and the upper 3 bits specify
@@ -50,7 +51,7 @@
 %   multiple of 4 bytes.
 %
 %   Limits:
-%     Maximum number of array dimensions: 255
+%     Maximum number of array dimensions: 255 (2 in standalone mode)
 %     Maximum number of array elements: 2,147,483,647
 %     Maximum buffer size: 2,147,483,644
 %
@@ -94,7 +95,7 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 		end
 	end
 
-	% Encode signature, v, and padding
+	% Encode
 	ctx = append(ctx, bsig);
 	ctx = encAny(ctx, v);
 	pad = uint8(4 - bitand(ctx.len,3));
@@ -119,7 +120,7 @@ function ctx = encAny(ctx, v)
 	elseif isstruct(v)
 		ctx = encStruct(ctx, v);
 	else
-		ctx = fail(ctx, 'unsupported');
+		ctx = fail(ctx, 'unsupportedClass', true);
 	end
 end
 
@@ -147,6 +148,7 @@ function ctx = encLogical(ctx, v)
 end
 
 function ctx = encSparse(ctx, v)
+	ctx = encTag(ctx, v, 'sparse');
 	idx = find(v);
 	if isempty(idx)
 		idx = reshape(idx, 0, 0);
@@ -154,7 +156,6 @@ function ctx = encSparse(ctx, v)
 	else
 		cid = minUint(idx(end));
 	end
-	ctx = encTag(ctx, v, 'sparse');
 	switch cid
 	case 1
 		ctx = encNumeric(ctx, uint8(idx));
@@ -162,8 +163,6 @@ function ctx = encSparse(ctx, v)
 		ctx = encNumeric(ctx, uint16(idx));
 	case 3
 		ctx = encNumeric(ctx, uint32(idx));
-	otherwise
-		ctx = encNumeric(ctx, idx);  % Will fail
 	end
 	ctx = encAny(ctx, full(v(idx)));
 end
@@ -172,11 +171,9 @@ function ctx = encChar(ctx, v)
 	if all(v(:) <= intmax('uint8'))
 		ctx = encTag(ctx, v, 'char8');
 		ctx = appendBytes(ctx, uint8(v(:)));
-	elseif ~ctx.cgen
+	else
 		ctx = encTag(ctx, v, 'char16');
 		ctx = append(ctx, uint16(v(:)));
-	else
-		ctx = fail(ctx, 'unicodeChar');
 	end
 end
 
@@ -188,11 +185,11 @@ function ctx = encCell(ctx, v)
 end
 
 function ctx = encStruct(ctx, v)
+	ctx = encTag(ctx, v, 'struct');
 	fields = fieldnames(v);
 	if isempty(fields)
 		fields = reshape(fields, 0, 0);
 	end
-	ctx = encTag(ctx, v, 'struct');
 	ctx = encCell(ctx, fields);
 	for i = 1:numel(fields)
 		for j = 1:numel(v)
@@ -204,21 +201,19 @@ end
 
 function ctx = encTag(ctx, v, cls)
 	tag = cls2cid(cls);
-	if ~tag
-		ctx = fail(ctx, 'unsupported');
-	end
+	assert(tag > 0);
 	if isscalar(v)
 		ctx = appendBytes(ctx, tag);
 		return;
 	end
 	maxsz = max(size(v));  % Not the same as length(v) for empty v
 	if maxsz > intmax('uint8') || ~ismatrix(v)
-		if ndims(v) > intmax('uint8') || (isempty(ctx.cgen) && ndims(v) > 2)
-			ctx = fail(ctx, 'ndimsRange');
+		if ndims(v) > intmax('uint8') || (isempty(ctx.cgen) && ~ismatrix(v))
+			ctx = fail(ctx, 'ndimsLimit', true);
 		end
 		sz = size(v);
 		if numel(v) > intmax || (isempty(v) && prod(sz(sz ~= 0)) > intmax)
-			ctx = fail(ctx, 'numelRange');
+			ctx = fail(ctx, 'numelLimit');
 		end
 		cid = minUint(maxsz);
 		ctx = appendBytes(ctx, [tag+bitshift(4+cid,5), uint8(ndims(v))]);
@@ -256,7 +251,7 @@ function ctx = appendBytes(ctx, v)
 		if n == 0
 			return;
 		elseif ctx.len > intmax - 3
-			ctx = fail(ctx, 'overflow');
+			ctx = fail(ctx, 'bufLimit');
 			return;
 		end
 		ctx.buf = [ctx.buf; zeros(max(n/2,ctx.len-n), 1, 'uint8')];
@@ -264,33 +259,31 @@ function ctx = appendBytes(ctx, v)
 	ctx.buf(i:ctx.len) = v(:);
 end
 
-function ctx = fail(ctx, id)
+function ctx = fail(ctx, id, codegenErr)
 	if isempty(ctx.err)
 		ctx.err = id;
 		ctx.buf = zeros(0, 1, 'uint8');
 	end
-	if isempty(ctx.cgen)
-		return;  % TODO: Still throw from mex files?
-	end
 	switch id
+	case 'invalidSig'
+		msg = 'Invalid buffer signature (must be scalar < 240).';
 	case 'invalidByteOrder'
 		msg = 'Byte order must be one of '''', ''B'', or ''L''.';
-	case 'invalidSig'
-		msg = 'Invalid buffer signature.';
-	case 'overflow'
-		msg = 'Buffer size limit exceeded.';
-	case 'unsupported'
-		msg = 'Unsupported data type.';
-	case 'unicodeChar'
-		msg = '16-bit characters are not supported.';
-	case 'ndimsRange'
-		msg = 'Number of dimensions exceeds uint8 range.';
-	case 'numelRange'
-		msg = 'Number of elements exceeds int32 range.';
-	case ''
-		msg = '';
+	case 'unsupportedClass'
+		msg = 'Unsupported object class.';
+	case 'ndimsLimit'
+		msg = 'Number of dimensions exceeds limit.';
+	case 'numelLimit'
+		msg = 'Number of elements exceeds limit.';
+	case 'bufLimit'
+		msg = 'Buffer size exceeds limit.';
 	end
-	error([mfilename ':' id], msg);
+	id = [mfilename ':' id];
+	if ~isempty(ctx.cgen) || (coder.target('MEX') && nargin < 3)
+		error(id, msg);
+	elseif nargin == 3
+		coder.inline(id);  % Hack to generate errors during codegen execution
+	end
 end
 
 function cid = cls2cid(cls)
