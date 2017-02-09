@@ -61,22 +61,28 @@
 
 function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 	narginchk(1, 3);
-	cgen = int32(nargout == 2);
+	cgen = (nargout == 2);
+	maySwap = (nargin == 3 && ~isempty(byteOrder));
 	ctx = struct( ...
-		'buf',  zeros(64, 1, 'uint8'), ...
 		'len',  int32(0), ...
-		'swap', false, ...
-		'cgen', false(1 - cgen), ...  % Empty is compile-time true
+		'swap', false(int32(maySwap)), ...  % Empty is compile-time false
+		'cgen', false(int32(~cgen)), ...    % Empty is compile-time true
 		'err',  '' ...
 	);
 	if cgen
 		coder.cstructname(ctx, 'MxEncCtx');
-		coder.varsize('ctx.buf');
 		coder.varsize('ctx.err', [1,32]);
+		coder.varsize('buf', [Inf,1]);
 	end
 
+	% Buffer had to be moved out of ctx because Coder generated really terrible
+	% code otherwise (making a copy of ctx between each append call and
+	% immediately freeing the original).
+	buf = zeros(0, 1, 'uint8');
+
 	% Define buffer signature
-	bsig = bitshift(uint16(240),8) + 42;
+	fver = uint16(240);
+	bsig = bitshift(fver,8) + 42;
 	if nargin >= 2 && ~isempty(sig)
 		if isscalar(sig) && uint16(sig) < 240
 			bsig = bsig - 42 + uint16(sig);
@@ -86,7 +92,7 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 	end
 
 	% Configure encoder byte order
-	if nargin == 3 && ~isempty(byteOrder)
+	if maySwap
 		if byteOrder == 'B' || byteOrder == 'L'
 			native = char(bitand(typecast(uint8('LB'),'uint16'), 255));
 			ctx.swap = (byteOrder ~= native);
@@ -96,59 +102,72 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 	end
 
 	% Encode
-	ctx = append(ctx, bsig);
-	ctx = encAny(ctx, v);
-	pad = uint8(4 - bitand(ctx.len,3));
-	ctx = appendBytes(ctx, repmat(bitcmp(pad),pad,1));
-	err = ctx.err;
-	if ~isempty(ctx.buf) && isempty(err)
-		buf = ctx.buf(1:ctx.len);
-	else
-		buf = zeros(0, 1, 'uint8');
+	if valid(ctx)
+		if ~cgen
+			buf = zeros(4096, 1, 'uint8');
+		else
+			buf = coder.nullcopy(zeros(4096, 1, 'uint8'));
+		end
+		[ctx,buf] = append(ctx, buf, bsig);
+		[ctx,buf] = encAny(ctx, buf, v);
+		pad = uint8(4 - bitand(ctx.len,3));
+		[ctx,buf] = appendBytes(ctx, buf, repmat(bitcmp(pad),pad,1));
+
+		% Sanity check for coder.nullcopy hack in appendBytes
+		if cgen && buf(1) ~= fver && buf(2) ~= fver
+			ctx = fail(ctx, 'bufResize');
+		end
 	end
+
+	% Shrink buf to its final size
+	if ~valid(ctx)
+		ctx.len = int32(0);
+	end
+	buf = buf(1:ctx.len);
+	err = ctx.err;
 end
 
-function ctx = encAny(ctx, v)
+function [ctx,buf] = encAny(ctx, buf, v)
 	if isnumeric(v)
-		ctx = encNumeric(ctx, v);
+		[ctx,buf] = encNumeric(ctx, buf, v);
 	elseif islogical(v)
-		ctx = encLogical(ctx, v);
+		[ctx,buf] = encLogical(ctx, buf, v);
 	elseif ischar(v)
-		ctx = encChar(ctx, v);
+		[ctx,buf] = encChar(ctx, buf, v);
 	elseif iscell(v)
-		ctx = encCell(ctx, v);
+		[ctx,buf] = encCell(ctx, buf, v);
 	elseif isstruct(v)
-		ctx = encStruct(ctx, v);
+		[ctx,buf] = encStruct(ctx, buf, v);
 	else
 		ctx = fail(ctx, 'unsupportedClass', true);
 	end
 end
 
-function ctx = encNumeric(ctx, v)
+function [ctx,buf] = encNumeric(ctx, buf, v)
 	if issparse(v)
-		ctx = encSparse(ctx, v);
+		[ctx,buf] = encSparse(ctx, buf, v);
 	elseif isreal(v)
-		ctx = encTag(ctx, v, class(v));
-		ctx = append(ctx, v(:));
+		[ctx,buf] = encTag(ctx, buf, v, class(v));
+		[ctx,buf] = append(ctx, buf, v(:));
 	else
-		ctx = encTag(ctx, v, 'complex');
-		ctx = encTag(ctx, 0, class(v));
-		ctx = append(ctx, real(v(:)));
-		ctx = append(ctx, imag(v(:)));
+		[ctx,buf] = encTag(ctx, buf, v, 'complex');
+		[ctx,buf] = encTag(ctx, buf, 0, class(v));
+		[ctx,buf] = append(ctx, buf, real(v(:)));
+		[ctx,buf] = append(ctx, buf, imag(v(:)));
 	end
 end
 
-function ctx = encLogical(ctx, v)
+function [ctx,buf] = encLogical(ctx, buf, v)
 	if issparse(v)
-		ctx = encSparse(ctx, v);
+		[ctx,buf] = encSparse(ctx, buf, v);
 	else
-		ctx = encTag(ctx, v, 'logical');
-		ctx = appendBytes(ctx, uint8(v(:)));
+		[ctx,buf] = encTag(ctx, buf, v, 'logical');
+		[ctx,buf] = appendBytes(ctx, buf, uint8(v(:)));
 	end
 end
 
-function ctx = encSparse(ctx, v)
-	ctx = encTag(ctx, v, 'sparse');
+function [ctx,buf] = encSparse(ctx, buf, v)
+	[ctx,buf] = encTag(ctx, buf, v, 'sparse');
 	idx = find(v);
 	if isempty(idx)
 		idx = reshape(idx, 0, 0);
@@ -158,52 +177,52 @@ function ctx = encSparse(ctx, v)
 	end
 	switch cid
 	case 1
-		ctx = encNumeric(ctx, uint8(idx));
+		[ctx,buf] = encNumeric(ctx, buf, uint8(idx));
 	case 2
-		ctx = encNumeric(ctx, uint16(idx));
+		[ctx,buf] = encNumeric(ctx, buf, uint16(idx));
 	case 3
-		ctx = encNumeric(ctx, uint32(idx));
+		[ctx,buf] = encNumeric(ctx, buf, uint32(idx));
 	end
-	ctx = encAny(ctx, full(v(idx)));
+	[ctx,buf] = encAny(ctx, buf, full(v(idx)));
 end
 
-function ctx = encChar(ctx, v)
+function [ctx,buf] = encChar(ctx, buf, v)
 	if all(v(:) <= intmax('uint8'))
-		ctx = encTag(ctx, v, 'char8');
-		ctx = appendBytes(ctx, uint8(v(:)));
+		[ctx,buf] = encTag(ctx, buf, v, 'char8');
+		[ctx,buf] = appendBytes(ctx, buf, uint8(v(:)));
 	else
-		ctx = encTag(ctx, v, 'char16');
-		ctx = append(ctx, uint16(v(:)));
+		[ctx,buf] = encTag(ctx, buf, v, 'char16');
+		[ctx,buf] = append(ctx, buf, uint16(v(:)));
 	end
 end
 
-function ctx = encCell(ctx, v)
-	ctx = encTag(ctx, v, 'cell');
+function [ctx,buf] = encCell(ctx, buf, v)
+	[ctx,buf] = encTag(ctx, buf, v, 'cell');
 	for i = 1:numel(v)
-		ctx = encAny(ctx, v{i});
+		[ctx,buf] = encAny(ctx, buf, v{i});
 	end
 end
 
-function ctx = encStruct(ctx, v)
-	ctx = encTag(ctx, v, 'struct');
+function [ctx,buf] = encStruct(ctx, buf, v)
+	[ctx,buf] = encTag(ctx, buf, v, 'struct');
 	fields = fieldnames(v);
 	if isempty(fields)
 		fields = reshape(fields, 0, 0);
 	end
-	ctx = encCell(ctx, fields);
+	[ctx,buf] = encCell(ctx, buf, fields);
 	for i = 1:numel(fields)
 		for j = 1:numel(v)
 			% Coder requires fields{i} to be used directly
-			ctx = encAny(ctx, v(j).(fields{i}));
+			[ctx,buf] = encAny(ctx, buf, v(j).(fields{i}));
 		end
 	end
 end
 
-function ctx = encTag(ctx, v, cls)
+function [ctx,buf] = encTag(ctx, buf, v, cls)
 	tag = cls2cid(cls);
 	assert(tag > 0);
 	if isscalar(v)
-		ctx = appendBytes(ctx, tag);
+		[ctx,buf] = appendBytes(ctx, buf, tag);
 		return;
 	end
 	maxsz = max(size(v));  % Not the same as length(v) for empty v
@@ -216,53 +235,72 @@ function ctx = encTag(ctx, v, cls)
 			ctx = fail(ctx, 'numelLimit');
 		end
 		cid = minUint(maxsz);
-		ctx = appendBytes(ctx, [tag+bitshift(4+cid,5), uint8(ndims(v))]);
+		[ctx,buf] = appendBytes(ctx, buf, ...
+				[tag+bitshift(4+cid,5), uint8(ndims(v))]);
 		switch cid
 		case 1
-			ctx = append(ctx, uint8(size(v)));
+			[ctx,buf] = append(ctx, buf, uint8(size(v)));
 		case 2
-			ctx = append(ctx, uint16(size(v)));
+			[ctx,buf] = append(ctx, buf, uint16(size(v)));
 		case 3
-			ctx = append(ctx, uint32(size(v)));
+			[ctx,buf] = append(ctx, buf, uint32(size(v)));
 		end
 	elseif maxsz == 0
-		ctx = appendBytes(ctx, tag+128);
+		[ctx,buf] = appendBytes(ctx, buf, tag+128);
 	elseif iscolumn(v)
-		ctx = appendBytes(ctx, [tag+32, uint8(size(v,1))]);
+		[ctx,buf] = appendBytes(ctx, buf, [tag+32, uint8(size(v,1))]);
 	elseif isrow(v)
-		ctx = appendBytes(ctx, [tag+64, uint8(size(v,2))]);
+		[ctx,buf] = appendBytes(ctx, buf, [tag+64, uint8(size(v,2))]);
 	else
-		ctx = appendBytes(ctx, [tag+64+32, uint8(size(v))]);
+		[ctx,buf] = appendBytes(ctx, buf, [tag+64+32, uint8(size(v))]);
 	end
 end
 
-function ctx = append(ctx, v)
+function [ctx,buf] = append(ctx, buf, v)
 	if ctx.swap
 		v = swapbytes(v);
 	end
-	ctx = appendBytes(ctx, typecast(v,'uint8'));
+	[ctx,buf] = appendBytes(ctx, buf, typecast(v, 'uint8'));
 end
 
-function ctx = appendBytes(ctx, v)
-	n = int32(numel(ctx.buf));
-	i = ctx.len + 1;
-	ctx.len = ctx.len + numel(v);
-	if ctx.len > n
-		if n == 0
-			return;
-		elseif ctx.len > intmax - 3
-			ctx = fail(ctx, 'bufLimit');
+function [ctx,buf] = appendBytes(ctx, buf, v)
+	newLen = ctx.len + numel(v);
+	if newLen > numel(buf)
+		if newLen > intmax - 3
+			ctx = fail(ctx, 'bufLimit');  % Or already failed
 			return;
 		end
-		ctx.buf = [ctx.buf; zeros(max(n/2,ctx.len-n), 1, 'uint8')];
+		n = int32(numel(buf));
+		grow = min(max(n+bitshift(n,-1), newLen), intmax-3);
+		if ~isempty(ctx.cgen) || coder.target('MATLAB')
+			buf = [buf; zeros(grow-n, 1, 'uint8')];
+		else
+			% HACK: Call emxEnsureCapacity without creating additional buf
+			% copies. Existing data should still be copied by emxEnsureCapacity.
+			buf = coder.nullcopy(zeros(grow, 1, 'uint8'));
+		end
 	end
-	ctx.buf(i:ctx.len) = v(:);
+	if ~ctx.cgen
+		buf(ctx.len+1:ctx.len+numel(v)) = v(:);
+	else
+		% If you want to say "WTF!?!" ten times, generate code for the other
+		% version. uint32 used to get rid of overflow/underflow checks.
+		off = uint32(ctx.len);
+		for i = uint32(1):uint32(numel(v))
+			buf(off+i) = v(i);
+		end
+	end
+	ctx.len = int32(newLen);
+end
+
+function tf = valid(ctx)
+	tf = (ctx.len < intmax);
 end
 
 function ctx = fail(ctx, id, codegenErr)
 	if isempty(ctx.err)
+		ctx.len = intmax;
 		ctx.err = id;
-		ctx.buf = zeros(0, 1, 'uint8');
 	end
 	switch id
 	case 'invalidSig'
@@ -277,12 +315,14 @@ function ctx = fail(ctx, id, codegenErr)
 		msg = 'Number of elements exceeds limit.';
 	case 'bufLimit'
 		msg = 'Buffer size exceeds limit.';
+	case 'bufResize'
+		msg = 'Buffer resize via coder.nullcopy failed.';
 	end
 	id = [mfilename ':' id];
 	if ~isempty(ctx.cgen) || (coder.target('MEX') && nargin < 3)
 		error(id, msg);
 	elseif nargin == 3
-		coder.inline(id);  % Hack to generate errors during codegen execution
+		coder.inline(id);  % HACK: Generate errors during codegen execution
 	end
 end
 

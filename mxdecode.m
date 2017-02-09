@@ -21,6 +21,9 @@
 %
 %   The paragraphs below apply only to standalone mode:
 %
+%   MXENCODE and MXDECODE assume coder.CodeConfig.SaturateOnIntegerOverflow is
+%   set to 'true' to match MATLAB behavior.
+%
 %   All non-scalar values in V, including V itself, must be declared as
 %   variable-size using CODER.VARSIZE. Scalar values must not be declared as
 %   such. You may specify an explicit upper bound for varying dimensions, but
@@ -85,7 +88,7 @@
 %   Written by Maxim Khitrov (February 2017)
 
 function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
-	cgen = int32(nargout == 2);
+	cgen = (nargout == 2);
 	if cgen
 		narginchk(3, 4);
 	else
@@ -99,7 +102,7 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 		'buf',    zeros(0, 1, 'uint8'), ...
 		'pos',    int32(3), ...
 		'swap',   false, ...
-		'cgen',   false(1 - cgen), ...          % Empty is compile-time true
+		'cgen',   false(int32(~cgen)), ...      % Empty is compile-time true
 		'ubound', zeros(int32(ubound), 0), ...  % Size is compile-time constant
 		'err',    '' ...
 	);
@@ -468,8 +471,8 @@ end
 
 function ctx = fail(ctx, id)
 	if isempty(ctx.err)
-		ctx.err = id;
 		ctx.pos = intmax;
+		ctx.err = id;
 	end
 	switch id
 	case 'classMismatch'
