@@ -163,7 +163,7 @@ function testCell(tc)
 	v = {};               f(tc, v, 'emptyCell',     1);
 	v = {{}};             f(tc, v, 'emptyCell',     1 + 1);
 	v = {{{}}};           f(tc, v, 'emptyCell',     1 + 1 + 1);
-	v = {1,'a'};          f(tc, v, 'notNumeric',    1+1 + 1+8 + 1+1);
+	v = {1,'a'};          f(tc, v, 'classMismatch', 1+1 + 1+8 + 1+1);
 	v = {{1},'a'};        f(tc, v, 'classMismatch', 1+1 + 1+1+8 + 1+1);
 	v = {{{}, 1}};        f(tc, v, 'emptyCell',     1 + 1+1 + 1 + 1+8);
 	v = {{'a'},{1,2}};    f(tc, v, 'classMismatch', 1+1 + 1+1+1 + 1+1+1+8+1+8);

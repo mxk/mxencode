@@ -60,11 +60,10 @@
 %   Written by Maxim Khitrov (February 2017)
 
 function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
-	narginchk(1, 3);
 	cgen = (nargout == 2);
+	narginchk(1, 3);
 	maySwap = (nargin == 3 && ~isempty(byteOrder));
 	ctx = struct( ...
-		'len',  int32(0), ...
 		'swap', false(int32(maySwap)), ...  % Empty is compile-time false
 		'cgen', false(int32(~cgen)), ...    % Empty is compile-time true
 		'err',  '' ...
@@ -72,15 +71,10 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 	if cgen
 		coder.cstructname(ctx, 'MxEncCtx');
 		coder.varsize('ctx.err', [1,32]);
-		coder.varsize('buf', [Inf,1], [true,false]);
+		coder.varsize('buf', [Inf,1]);
 	end
 
-	% Buffer had to be moved out of ctx because Coder generated really
-	% inefficient code otherwise (making a copy of ctx between each append call
-	% and immediately freeing the original).
-	buf = zeros(0, 1, 'uint8');
-
-	% Define buffer signature
+	% Set buffer signature
 	fmt = uint16(240);
 	usr = uint16(42);
 	if nargin >= 2 && ~isempty(sig)
@@ -91,7 +85,7 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 		end
 	end
 
-	% Configure encoder byte order
+	% Set encoder byte order
 	if maySwap
 		if byteOrder == 'B' || byteOrder == 'L'
 			native = char(bitand(typecast(uint8('LB'),'uint16'), 255));
@@ -101,16 +95,22 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 		end
 	end
 
+	% Buffer had to be moved out of ctx because Coder generated really
+	% inefficient code otherwise, making a copy of ctx between each append call
+	% and immediately freeing the original.
+	buf = zeros(0, 1, 'uint8');
+
 	% Encode
-	if valid(ctx)
-		if ~cgen
-			buf = zeros(4096, 1, 'uint8');
-		else
+	if isempty(ctx.err)
+		if cgen && ~coder.target('MATLAB')
+			% Pre-allocate 4KB buffer. The first append will reduce its size but
+			% keep the capacity (doing that here eliminates pre-allocation).
 			buf = coder.nullcopy(zeros(4096, 1, 'uint8'));
+			buf(1:2) = uint8(0);
 		end
 		[ctx,buf] = append(ctx, buf, bitshift(fmt,8)+usr);
 		[ctx,buf] = encAny(ctx, buf, v);
-		pad = uint8(4 - bitand(ctx.len,3));
+		pad = uint8(4 - bitand(uint32(numel(buf)),3));
 		[ctx,buf] = appendBytes(ctx, buf, repmat(bitcmp(pad),pad,1));
 
 		% Sanity check for coder.nullcopy hack in appendBytes
@@ -118,14 +118,9 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 				(buf(1) == fmt && buf(2) == usr))
 			ctx = fail(ctx, 'bufResize');
 		end
-	end
-
-	% Shrink buf to its final size
-	if ~valid(ctx)
-		buf = zeros(0, 1, 'uint8');
-	elseif ~cgen || coder.target('MATLAB')
-		% Standalone code maintains exact buf size in appendBytes
-		buf = buf(1:ctx.len);
+		if ~isempty(ctx.err)
+			buf = zeros(0, 1, 'uint8');
+		end
 	end
 	err = ctx.err;
 end
@@ -179,12 +174,9 @@ function [ctx,buf] = encSparse(ctx, buf, v)
 		cid = minUint(idx(end));
 	end
 	switch cid
-	case 1
-		[ctx,buf] = encNumeric(ctx, buf, uint8(idx));
-	case 2
-		[ctx,buf] = encNumeric(ctx, buf, uint16(idx));
-	case 3
-		[ctx,buf] = encNumeric(ctx, buf, uint32(idx));
+	case 1; [ctx,buf] = encNumeric(ctx, buf, uint8(idx));
+	case 2; [ctx,buf] = encNumeric(ctx, buf, uint16(idx));
+	case 3; [ctx,buf] = encNumeric(ctx, buf, uint32(idx));
 	end
 	[ctx,buf] = encAny(ctx, buf, full(v(idx)));  % Double or logical
 end
@@ -229,7 +221,7 @@ function [ctx,buf] = encTag(ctx, buf, v, cls)
 		return;
 	end
 	maxsz = max(size(v));  % Not the same as length(v) for empty v
-	if maxsz > intmax('uint8') || ~ismatrix(v)
+	if ~ismatrix(v) || maxsz > intmax('uint8')
 		if ndims(v) > intmax('uint8') || (isempty(ctx.cgen) && ~ismatrix(v))
 			ctx = fail(ctx, 'ndimsLimit', true);
 		end
@@ -238,24 +230,20 @@ function [ctx,buf] = encTag(ctx, buf, v, cls)
 			ctx = fail(ctx, 'numelLimit');
 		end
 		cid = minUint(maxsz);
-		[ctx,buf] = appendBytes(ctx, buf, ...
-				[tag+bitshift(4+cid,5); uint8(ndims(v))]);
+		[ctx,buf] = appendBytes(ctx, buf, [tag+bitshift(4+cid,5); ndims(v)]);
 		switch cid
-		case 1
-			[ctx,buf] = append(ctx, buf, uint8(size(v)));
-		case 2
-			[ctx,buf] = append(ctx, buf, uint16(size(v)));
-		case 3
-			[ctx,buf] = append(ctx, buf, uint32(size(v)));
+		case 1; [ctx,buf] = append(ctx, buf, uint8(size(v)));
+		case 2; [ctx,buf] = append(ctx, buf, uint16(size(v)));
+		case 3; [ctx,buf] = append(ctx, buf, uint32(size(v)));
 		end
 	elseif maxsz == 0
 		[ctx,buf] = appendBytes(ctx, buf, tag+128);
 	elseif iscolumn(v)
-		[ctx,buf] = appendBytes(ctx, buf, [tag+32; uint8(size(v,1))]);
+		[ctx,buf] = appendBytes(ctx, buf, [tag+32; size(v,1)]);
 	elseif isrow(v)
-		[ctx,buf] = appendBytes(ctx, buf, [tag+64; uint8(size(v,2))]);
+		[ctx,buf] = appendBytes(ctx, buf, [tag+64; size(v,2)]);
 	else
-		[ctx,buf] = appendBytes(ctx, buf, [tag+64+32; uint8(size(v)')]);
+		[ctx,buf] = appendBytes(ctx, buf, [tag+64+32; size(v,1); size(v,2)]);
 	end
 end
 
@@ -269,40 +257,34 @@ function [ctx,buf] = append(ctx, buf, v)
 end
 
 function [ctx,buf] = appendBytes(ctx, buf, bytes)
-	newLen = ctx.len + numel(bytes);
-	if ~isempty(ctx.cgen) || coder.target('MATLAB')
-		if newLen > numel(buf)
-			if newLen > intmax - 3
-				ctx = fail(ctx, 'bufLimit');  % Or already failed
-				return;
-			end
-			n = uint32(numel(buf));
-			grow = min(max(n+bitshift(n,-1), uint32(newLen)), uint32(intmax-3));
-			buf(n+1:grow) = uint8(0);
-		end
-		buf(ctx.len+1:ctx.len+numel(bytes)) = bytes;
+	i = int32(numel(buf)) + 1;
+	j = int32(numel(buf)) + int32(numel(bytes));
+	if j > intmax - 3 || ~isempty(ctx.err)
+		ctx = fail(ctx, 'bufLimit');
+	elseif ~isempty(ctx.cgen) || coder.target('MATLAB')
+		buf(i:j) = bytes;
 	else
+		if buf(1) == buf(2)
+			% First append to pre-allocated buf
+			i = int32(1);
+			j = int32(numel(bytes));
+		end
+
+		% Barrier to evaluate i and j (see mxdecode for explanation)
+		coder.ceval('(void)', coder.ref(i), coder.ref(j));
+
 		% HACK: Call emxEnsureCapacity without creating additional buf copies
-		% (existing data is still copied). emxEnsureCapacity doubles the current
-		% allocation, so size can be exact. This eliminates the only copy when
-		% shrinking the buffer in mxencode.
-		buf = coder.nullcopy(zeros(newLen, 1, 'uint8'));
-		coder.ceval('memcpy', coder.wref(buf(ctx.len+1)), coder.rref(bytes), ...
+		buf = coder.nullcopy(zeros(j, 1, 'uint8'));
+		coder.ceval('memcpy', coder.wref(buf(i)), coder.rref(bytes), ...
 				int32(numel(bytes)));
 	end
-	ctx.len = newLen;
 end
 
-function tf = valid(ctx)
-	tf = (ctx.len < intmax);
-end
-
-function ctx = fail(ctx, id, codegenErr)
+function ctx = fail(ctx, err, codegenErr)
 	if isempty(ctx.err)
-		ctx.len = intmax;
-		ctx.err = id;
+		ctx.err = err;
 	end
-	switch id
+	switch err
 	case 'bufLimit'
 		msg = 'Buffer size exceeds limit.';
 	case 'bufResize'
@@ -318,11 +300,11 @@ function ctx = fail(ctx, id, codegenErr)
 	case 'unsupportedClass'
 		msg = 'Unsupported object class.';
 	end
-	id = [mfilename ':' id];
+	err = [mfilename ':' err];
 	if ~isempty(ctx.cgen) || (coder.target('MEX') && nargin < 3)
-		error(id, msg);
+		error(err, msg);
 	elseif nargin == 3
-		coder.inline(id);  % HACK: Generate errors during codegen execution
+		coder.inline(err);  % HACK: Generate errors during codegen execution
 	end
 end
 
