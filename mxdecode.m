@@ -8,10 +8,10 @@
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V) activates standalone mode for generating C/C++
 %     code with MATLAB Coder. If an error is encountered during decoding, ERR
-%     will contain its message id and V may be partially modified. The same V
-%     must be used for input and output. An error is returned if BUF does not
-%     contain a valid encoding of V. In other words, V specifies the required
-%     BUF format and BUF provides the data.
+%     will contain its message id (just the mnemonic) and V may be partially
+%     modified. The same V must be used for input and output. An error is
+%     returned if BUF does not contain a valid encoding of V. In other words, V
+%     specifies the required BUF format and BUF provides the data.
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V,UBOUND) uses UBOUND as the upper bound on the
 %     number of elements and struct fields for any value in BUF to generate more
@@ -138,18 +138,18 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 	end
 
 	% Verify signature and detect byte order
-	fver = uint16(240);
-	usig = uint16(42);
+	fmt = uint16(240);
+	usr = uint16(42);
 	if nargin >= 2 && ~isempty(sig)
-		usig = uint16(sig);
+		usr = uint16(sig);
 	end
-	if usig >= 240 || ~((buf(1) == usig && buf(2) == fver) || ...
-			(buf(1) == fver && buf(2) == usig))
+	if usr >= 240 || ~((buf(1) == usr && buf(2) == fmt) || ...
+			(buf(1) == fmt && buf(2) == usr))
 		ctx = fail(ctx, 'invalidSig');
 		err = ctx.err;
 		return;
 	end
-	ctx.swap = (typecast(buf(1:2),'uint16') ~= bitshift(fver,8)+usig);
+	ctx.swap = (typecast(buf(1:2),'uint16') ~= bitshift(fmt,8)+usr);
 
 	% Decode
 	ctx.buf = buf;
@@ -477,30 +477,28 @@ function ctx = fail(ctx, id)
 	switch id
 	case 'classMismatch'
 		msg = 'Encoding does not match expected class.';
+	case 'emptyCell'
+		msg = 'Cell does not contain any elements.';
 	case 'invalidBuf'
 		msg = 'Invalid buffer format.';
 	case 'invalidNdims'
 		msg = 'Invalid number of dimensions.';
-	case 'invalidSig'
-		msg = 'Invalid buffer signature.';
 	case 'invalidPad'
 		msg = 'Invalid buffer padding.';
-	case 'ubound'
-		msg = 'Number of elements exceeds ubound.';
-	case 'nonScalar'
-		msg = 'Decoded value is not a scalar.';
-	case 'notNumeric'
-		msg = 'Encoded class is not numeric.';
-	case 'unicodeChar'
-		msg = '16-bit characters are not supported.';
-	case 'emptyCell'
-		msg = 'Cell does not contain any elements.';
+	case 'invalidSig'
+		msg = 'Invalid buffer signature.';
 	case 'invalidStruct'
 		msg = 'Invalid struct or field name mismatch.';
 	case 'invalidTag'
 		msg = 'Tag specifies an unknown class.';
-	otherwise
-		msg = 'Unknown error.';
+	case 'nonScalar'
+		msg = 'Decoded value is not a scalar.';
+	case 'notNumeric'
+		msg = 'Encoded class is not numeric.';
+	case 'ubound'
+		msg = 'Number of elements exceeds ubound.';
+	case 'unicodeChar'
+		msg = '16-bit characters are not supported.';
 	end
 	if ~isempty(ctx.cgen) || coder.target('MEX')
 		error([mfilename ':' id], msg);
