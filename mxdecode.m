@@ -14,10 +14,12 @@
 %     specifies the required BUF format and BUF provides the data.
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V,UBOUND) uses UBOUND as the upper bound on the
-%     number of elements and struct fields for any value in BUF to generate more
-%     efficient code. You must use the same UBOUND for all MXDECODE calls within
-%     the same program or you'll get the following error: "The name 'MxDecCtx'
-%     has already been defined using a different type." The default is Inf.
+%     number of elements, struct fields, and field name length for any value in
+%     BUF. This allows Coder to generate more efficient code. Decoding fails
+%     with 'numelLimit' error if BUF or V violate this limit. You must use the
+%     same UBOUND for all MXDECODE calls within the same program or you'll get
+%     the following error: "The name 'MxDecCtx' has already been defined using a
+%     different type." The default is Inf.
 %
 %   The paragraphs below apply only to standalone mode:
 %
@@ -181,114 +183,143 @@ function [ctx,v] = decNext(ctx, buf, v)
 
 	% Standalone code uses v to guide the decoding process while verifying that
 	% the buffer contains a valid encoding of v.
-	coder.varsize('tmp', [ubound(ctx),1], [true,false]);
+	if numel(v) > size(ctx.ubound, 1)
+		ctx = fail(ctx, 'numelLimit');
+		return;
+	end
+	coder.varsize('out', [ubound(ctx),1]);
 	if isnumeric(v) && isreal(v)
-		[ctx,tmp] = decNumeric(ctx, buf, v, n, cid);
+		[ctx,out] = decNumeric(ctx, buf, v, n, cid);
 	elseif isnumeric(v) && ~isreal(v) && cid == cls2cid('complex')
-		[ctx,tmp] = decComplex(ctx, buf, v, n);
+		[ctx,out] = decComplex(ctx, buf, v, n);
 	elseif islogical(v) && cid == cls2cid('logical')
-		[ctx,tmp] = decLogical(ctx, buf, v, n);
+		[ctx,out] = decLogical(ctx, buf, v, n);
 	elseif ischar(v) && (cid == cls2cid('char8') || cid == cls2cid('char16'))
-		[ctx,tmp] = decChar(ctx, buf, v, n, cid);
+		[ctx,out] = decChar(ctx, buf, v, n, cid);
 	elseif iscell(v) && cid == cls2cid('cell')
-		[ctx,tmp] = decCell(ctx, buf, v, n);
+		[ctx,out] = decCell(ctx, buf, v, n);
 	elseif isstruct(v) && cid == cls2cid('struct')
-		[ctx,tmp] = decStruct(ctx, buf, v, n);
+		[ctx,out] = decStruct(ctx, buf, v, n);
 	else
 		ctx = fail(ctx, 'classMismatch');
 		return;
 	end
+
+	% v's shape determines what can be assigned to it
 	if isempty(ctx.err)
 		if isscalar(v)
-			if ~isscalar(tmp)
+			if ~isscalar(out)
 				ctx = fail(ctx, 'sizeMismatch');
 			elseif iscell(v)
-				v{1} = tmp{1};
+				v{1} = out{1};
 			else
-				v(1) = tmp(1);
+				v(1) = out(1);
 			end
 		elseif size(v,1) ~= 1 && size(v,2) == 1
-			v = tmp;
+			v = out;
 		elseif size(v,1) == 1 && size(v,2) ~= 1
-			v = reshape(tmp, 1, numel(tmp));
+			v = reshape(out, 1, numel(out));
 		elseif size(v,1) ~= 1 && size(v,2) ~= 1
-			v = reshape(tmp, vsz);
+			v = reshape(out, vsz);
 		end
 	end
 end
 
-function [ctx,v] = decNumeric(ctx, buf, v, n, cid)
-	[ctx,i,j] = consume(ctx, n*cid2bpe(cid));
+function [ctx,out] = decNumeric(ctx, buf, v, n, cid)
 	if ~ctx.cgen
-		v = typecast(buf(i:j), cid2cls(cid));
-	elseif cid == cls2cid(class(v))
-		v = typecast(buf(i:j), class(v));
-	else
-		ctx = fail(ctx, 'classMismatch');
-		v = reshape(v, numel(v), 1);
+		[ctx,i,j] = consume(ctx, n*cid2bpe(cid));
+		out = typecast(buf(i:j), cid2cls(cid));
+		if ctx.swap
+			out = swapbytes(out);
+		end
 		return;
 	end
-	if ctx.swap
-		v = swapbytes(v);
+	coder.varsize('out', [ubound(ctx),1]);
+	if cid == cls2cid(class(v))
+		bpe = cid2bpe(cls2cid(class(v)));
+		[ctx,i,j] = consume(ctx, n*bpe);
+		if isa(v, 'uint8')
+			out = buf(i:j);
+		else
+			coder.varsize('dat', [ubound(ctx)*bpe,1]);
+			dat = buf(i:j);
+			out = typecast(dat, class(v));
+			if ctx.swap
+				out = swapbytes(out);
+			end
+		end
+	else
+		ctx = fail(ctx, 'classMismatch');
+		out = reshape(v, numel(v), 1);
 	end
 end
 
-function [ctx,v] = decComplex(ctx, buf, v, n)
+function [ctx,out] = decComplex(ctx, buf, v, n)
+	if isempty(ctx.cgen)
+		coder.varsize('out', 're', 'im', [ubound(ctx),1]);
+	end
 	[ctx,cid,~,~] = decTag(ctx, buf);
 	[ctx,re] = decNumeric(ctx, buf, real(v(:)), n, cid);
 	[ctx,im] = decNumeric(ctx, buf, imag(v(:)), n, cid);
 	if numel(re) == numel(im)
-		v = complex(re, im);
+		out = complex(re, im);
 	else
 		ctx = fail(ctx, 'sizeMismatch');
-		v = reshape(v, numel(v), 1);
+		out = reshape(v, numel(v), 1);
 	end
 end
 
-function [ctx,v] = decLogical(ctx, buf, v, n)
+function [ctx,out] = decLogical(ctx, buf, v, n)
+	if isempty(ctx.cgen)
+		coder.varsize('out', 'dat', [ubound(ctx),1]);
+	end
 	[ctx,i,j] = consume(ctx, n);
-	v = logical(buf(i:j));
+	dat = buf(i:j);
+	out = logical(dat);
 end
 
-function [ctx,v] = decSparse(ctx, buf, v, n)
+function [ctx,out] = decSparse(ctx, buf, v, n)
 	[ctx,idx] = decNext(ctx, buf, []);
 	[ctx,nze] = decNext(ctx, buf, []);
-	v = sparse(double(idx), 1, nze, double(n), 1);
+	out = sparse(double(idx), 1, nze, double(n), 1);
 end
 
-function [ctx,v] = decChar(ctx, buf, v, n, cid)
+function [ctx,out] = decChar(ctx, buf, v, n, cid)
+	if isempty(ctx.cgen)
+		coder.varsize('out', 'dat', [ubound(ctx),1]);
+	end
 	if cid == cls2cid('char8')
 		[ctx,i,j] = consume(ctx, n);
-		v = char(buf(i:j));
-		v = reshape(v, numel(v), 1);
+		dat = buf(i:j);
+		out = char(dat);
 	elseif ~ctx.cgen
-		u16 = zeros(0, 1, 'uint16');
-		[ctx,u16] = decNumeric(ctx, buf, u16, n, cls2cid('uint16'));
-		v = char(u16);
+		dat = zeros(0, 1, 'uint16');
+		[ctx,dat] = decNumeric(ctx, buf, dat, n, cls2cid('uint16'));
+		out = char(dat);
 	else
 		ctx = fail(ctx, 'unicodeChar');
-		v = reshape(v, numel(v), 1);
+		out = reshape(v, numel(v), 1);
 	end
 end
 
-function [ctx,v] = decCell(ctx, buf, v, n)
+function [ctx,out] = decCell(ctx, buf, v, n)
 	if ~ctx.cgen
-		e = [];
-	elseif isempty(v)
-		% At least one element is required to know the type of the cell
-		ctx = fail(ctx, 'emptyV');
-		v = reshape(v, numel(v), 1);
-		return;
+		v = {[]};
 	else
-		e = v{1};
+		coder.varsize('out', [ubound(ctx),1]);
+		if isempty(v)
+			ctx = fail(ctx, 'emptyV');
+			out = reshape(v, numel(v), 1);
+			return;
+		end
 	end
-	v = cell(n, 1);
-	for i = 1:numel(v)
-		[ctx,v{i}] = decNext(ctx, buf, e);
+	out = cell(n, 1);
+	for i = 1:numel(out)
+		[ctx,out{i}] = decNext(ctx, buf, v{1});
 	end
 end
 
-function [ctx,v] = decStruct(ctx, buf, v, n)
+function [ctx,out] = decStruct(ctx, buf, v, n)
 	if ~ctx.cgen
 		[ctx,fields] = decNext(ctx, buf, []);
 		fieldvals = cell(1, 2*numel(fields));
@@ -300,43 +331,42 @@ function [ctx,v] = decStruct(ctx, buf, v, n)
 			end
 			fieldvals{i} = vals;
 		end
-		v = struct(fieldvals{:});
-		return;
-	elseif isempty(v)
-		ctx = fail(ctx, 'emptyV');
-		v = reshape(v, numel(v), 1);
+		out = struct(fieldvals{:});
 		return;
 	end
 
-	% Get actual and encoded fields
-	vfields = fieldnames(v);
-	bfields = {'';''};
-	coder.varsize('bfields', [ubound(ctx),1]);
-	coder.varsize('bfields{:}', [1,63]);  % namelengthmax
-	[ctx,bfields] = decNext(ctx, buf, bfields);
+	% Ideally, bfn{:} should be limited to namelengthmax (63), but the decoder
+	% can't enforce two separate limits. If ubound(ctx) > 63, then there is a
+	% potential for field name buffer overflow.
+	coder.varsize('out', 'bfn', [ubound(ctx),1]);
+	coder.varsize('bfn{:}', [1,ubound(ctx)]);
+	if isempty(v)
+		ctx = fail(ctx, 'emptyV');
+		out = reshape(v, numel(v), 1);
+		return;
+	end
 
-	e = v(1);
-	v = repmat(v(1), n, 1);
-	err = ~isempty(vfields);
-
-	% Decode data for matching fields, ignore struct fields that weren't
-	% encoded, skip encoded fields that aren't in the struct. At least one field
-	% must match. Field order may be different.
-	for i = 1:numel(bfields)
-		field = bfields{i};
+	% Decode data for matching fields, ignore v fields that weren't encoded,
+	% skip encoded fields that aren't in v. At least one field must match, but
+	% order may be different.
+	out = repmat(v(1), n, 1);
+	vfn = fieldnames(v);
+	bfn = {'';''};
+	err = ~isempty(vfn);
+	[ctx,bfn] = decNext(ctx, buf, bfn);
+	for i = 1:numel(bfn)
 		match = false;
 
-		% Must use this form to make vfields{j} a compile-time constant
-		for j = 1:numel(vfields)
-			if ~strcmp(vfields{j}, field)
-				continue;
+		% Must use this form to make vfn{j} a compile-time constant
+		for j = 1:numel(vfn)
+			if strcmp(bfn{i}, vfn{j})
+				match = true;
+				err = false;
+				for k = 1:n
+					[ctx,out(k).(vfn{j})] = decNext(ctx, buf, v(1).(vfn{j}));
+				end
+				break;
 			end
-			match = true;
-			err = false;
-			for k = 1:n
-				[ctx,v(k).(vfields{j})] = decNext(ctx, buf, e.(vfields{j}));
-			end
-			break;
 		end
 		if ~match
 			for k = 1:n
@@ -351,7 +381,7 @@ end
 
 function [ctx,n] = skip(ctx, buf, expect)
 	[ctx,cid,vsz,n] = decTag(ctx, buf);
-	if ~isempty(expect) && ~any(cid == expect)
+	if ~isempty(expect) && all(cid ~= expect)
 		ctx = fail(ctx, 'invalidBuf');
 		return;
 	end
@@ -407,12 +437,14 @@ function [ctx,cid,vsz,n] = decTag(ctx, buf)
 	otherwise
 		[ctx,i,~] = consume(ctx, int32(1));
 		szn = int32(buf(i));
-		if szn < 2
-			ctx = fail(ctx, 'invalidTag');
-		elseif ~ctx.cgen
-			vsz = zeros(1, szn, 'int32');
-		elseif szn > 2
-			ctx = fail(ctx, 'ndimsLimit');
+		if szn ~= 2
+			if szn < 2
+				ctx = fail(ctx, 'invalidTag');
+			elseif isempty(ctx.cgen)
+				ctx = fail(ctx, 'ndimsLimit');
+			else
+				vsz = zeros(1, szn, 'int32');
+			end
 		end
 		if isempty(ctx.err)
 			% Separate function removes malloc calls from all other code paths
@@ -472,7 +504,7 @@ function ub = ubound(ctx)
 	end
 end
 
-function ctx = fail(ctx, err, codegenErr)
+function ctx = fail(ctx, err)
 	if isempty(ctx.err)
 		ctx.len = int32(0);
 		ctx.err = err;

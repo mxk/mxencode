@@ -104,7 +104,8 @@ function [buf,err] = mxencode(v, sig, byteOrder)  %#codegen
 	if isempty(ctx.err)
 		if cgen && ~coder.target('MATLAB')
 			% Pre-allocate 4KB buffer. The first append will reduce its size but
-			% keep the capacity (doing that here eliminates pre-allocation).
+			% keep the capacity (reducing size that here eliminates
+			% pre-allocation).
 			buf = coder.nullcopy(zeros(4096, 1, 'uint8'));
 			buf(1:2) = uint8(0);
 		end
