@@ -118,16 +118,6 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 		return;
 	end
 	pad = int32(bitcmp(buf(n)));
-	if cgen && ~coder.target('MATLAB')
-		% HACK: Force the evaluation of n and pad here. Coder has an annoying
-		% habit of delaying or inlining such evaluations in generated code, even
-		% when the resulting code is (much!) slower. In the worst case, it makes
-		% a copy of buf to keep an "old" version around for such delayed
-		% evaluations (even though buf is never modified). Verify the absence of
-		% copies by looking for variables like b_buf, b_ctx, and functions like
-		% emxCopyStruct_MxDecCtx.
-		coder.ceval('(void)', coder.ref(n), coder.ref(pad));
-	end
 	if ~pad || pad > 4 || any(buf(n-pad+1:n-1) ~= buf(n))
 		ctx = fail(ctx, 'invalidPad');
 		err = ctx.err;
@@ -394,9 +384,6 @@ function [ctx,cid,vsz,n] = decTag(ctx, buf)
 	[ctx,i,~] = consume(ctx, int32(1));
 	cid = bitand(buf(i), 31);
 	fmt = bitshift(buf(i), -5);
-	if isempty(ctx.cgen) && ~coder.target('MATLAB')
-		coder.ceval('(void)', coder.ref(cid), coder.ref(fmt));
-	end
 	if cid < 1 || 17 < cid
 		ctx = fail(ctx, 'invalidTag');
 	end
@@ -443,7 +430,7 @@ function [ctx,cid,vsz,n] = decTag(ctx, buf)
 end
 
 function [ctx,vsz,n] = decSize(ctx, buf, fmt, vsz)
-	if isempty(ctx.cgen) && ~coder.target('MATLAB')
+	if isempty(ctx.cgen)
 		coder.inline('never');
 		coder.varsize('u16', 'u32', [numel(vsz),1]);
 	end

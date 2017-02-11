@@ -269,7 +269,12 @@ function [ctx,buf] = appendBytes(ctx, buf, bytes)
 			j = int32(numel(bytes));
 		end
 
-		% HACK: Barrier to evaluate i and j (see mxdecode for explanation)
+		% HACK: Force the evaluation of i and j. Coder (as of R2016b) has an
+		% annoying habit of delaying or inlining such evaluations in generated
+		% code, even when the resulting code is (much!) slower. Without this, it
+		% makes multiple buf copies to keep old versions around for such delayed
+		% evaluations. Verify the absence of copies by looking for variables
+		% like b_buf, buf_data, b_ctx, etc.
 		coder.ceval('(void)', coder.ref(i), coder.ref(j));
 
 		% HACK: Call emxEnsureCapacity without creating additional buf copies
