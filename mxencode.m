@@ -225,8 +225,7 @@ function [ctx,buf] = encTag(ctx, buf, v, cls)
 		if ndims(v) > intmax('uint8') || (isempty(ctx.cgen) && ~ismatrix(v))
 			ctx = fail(ctx, 'ndimsLimit', true);
 		end
-		sz = size(v);
-		if numel(v) > intmax || (isempty(v) && prod(sz(sz ~= 0)) > intmax)
+		if maxsz > intmax || numel(v) > intmax
 			ctx = fail(ctx, 'numelLimit');
 		end
 		cid = minUint(maxsz);
@@ -270,7 +269,7 @@ function [ctx,buf] = appendBytes(ctx, buf, bytes)
 			j = int32(numel(bytes));
 		end
 
-		% Barrier to evaluate i and j (see mxdecode for explanation)
+		% HACK: Barrier to evaluate i and j (see mxdecode for explanation)
 		coder.ceval('(void)', coder.ref(i), coder.ref(j));
 
 		% HACK: Call emxEnsureCapacity without creating additional buf copies

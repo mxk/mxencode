@@ -31,7 +31,7 @@
 %   between CODER.VARSIZE declarations and the call to MXDECODE. In general,
 %   your program should have the following structure:
 %
-%     function [buf,out1,out2,...,outN] = compute(buf, in1, in2, ..., inN)
+%     function [buf,err,out1,out2,...,outN] = compute(buf, in1, in2, ..., inN)
 %         state = struct( ...
 %             'scalar', 123, ...  % Must not be declared with coder.varsize
 %             'rowvec', '', ...
@@ -40,7 +40,7 @@
 %             'cell',   {'',''} ...  % Cells may not be empty
 %         );
 %
-%         % Declare all variable-size fields
+%         % Declare all variable-size fields (specify upper bounds, if possible)
 %         coder.varsize('state.rowvec', 'state.colvec', 'state.matrix', ...
 %                       'state.cell');
 %
@@ -55,20 +55,19 @@
 %         % Perform your computation here, updating state as needed
 %
 %         % Encode state for the next run
-%         [buf,~] = mxencode(state);
+%         [buf,err] = mxencode(state);
 %     end
 %
-%   Only 2-D arrays are supported. Any dimensions in BUF beyond the first two
-%   are collapsed into the second one.
-%
-%   Sparse and 16-bit Unicode char arrays are not supported (Coder restrictions
-%   as of R2016b).
+%   Only 2-D arrays are supported. This is enforced at compile time by the
+%   encoder and run time by the decoder. Sparse and 16-bit Unicode char arrays
+%   are not supported (Coder restrictions as of R2016b).
 %
 %   Heterogeneous cells are not supported as they offer no advantages over
 %   structs. Structs and homogeneous cells must contain at least one element
 %   which determines the type of data that can be assigned to each field/cell.
-%   Variable-size structs and cells must contain at least two elements to be
-%   correctly declared as such using the default CODER.VARSIZE dims logic.
+%   As a result, variable-size structs and cells must contain at least two
+%   elements to be correctly declared as such using the default CODER.VARSIZE
+%   dims logic.
 %
 %   Struct decoding is considered successful if V has no fields or if at least
 %   one of the fields in V and BUF match via strcmp. Fields in V that are not in
@@ -96,11 +95,11 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 		v = [];
 	end
 	if nargin < 4
-		ubound = Inf;
+		ubound = intmax;
 	end
 	ctx = struct( ...
-		'buf',    zeros(0, 1, 'uint8'), ...
 		'pos',    int32(3), ...
+		'len',    int32(0), ...
 		'swap',   false, ...
 		'cgen',   false(int32(~cgen)), ...      % Empty is compile-time true
 		'ubound', zeros(int32(ubound), 0), ...  % Size is compile-time constant
@@ -108,7 +107,6 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 	);
 	if cgen
 		coder.cstructname(ctx, 'MxDecCtx');
-		coder.varsize('ctx.buf');
 		coder.varsize('ctx.err', [1,32]);
 	end
 
@@ -121,14 +119,13 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 	end
 	pad = int32(bitcmp(buf(n)));
 	if cgen && ~coder.target('MATLAB')
-		% Black magic to force the evaluation of n and pad here. Coder has an
-		% annoying habit of delaying or inlining such evaluations in generated
-		% code, even when the resulting code is (much!) slower. In the worst
-		% case, it copies buf to keep an "old" version around for such delayed
-		% evaluations (even though buf is never modified). Verify that the
-		% function 'emxCopyStruct_MxDecCtx' does not exist in the generated code
-		% after making any changes and look for other buf copies as well (b_buf,
-		% ctx_buf, b_ctx, etc.).
+		% HACK: Force the evaluation of n and pad here. Coder has an annoying
+		% habit of delaying or inlining such evaluations in generated code, even
+		% when the resulting code is (much!) slower. In the worst case, it makes
+		% a copy of buf to keep an "old" version around for such delayed
+		% evaluations (even though buf is never modified). Verify the absence of
+		% copies by looking for variables like b_buf, b_ctx, and functions like
+		% emxCopyStruct_MxDecCtx.
 		coder.ceval('(void)', coder.ref(n), coder.ref(pad));
 	end
 	if ~pad || pad > 4 || any(buf(n-pad+1:n-1) ~= buf(n))
@@ -152,36 +149,37 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 	ctx.swap = (typecast(buf(1:2),'uint16') ~= bitshift(fmt,8)+usr);
 
 	% Decode
-	ctx.buf = buf;
-	[ctx,v] = decNext(ctx, v);
+	ctx.len = n;
+	[ctx,v] = decNext(ctx, buf, v);
 	if ctx.pos ~= n - pad + 1
-		ctx = fail(ctx, 'invalidBuf');
+		ctx = fail(ctx, 'corruptBuf');
 	end
 	err = ctx.err;
 end
 
-function [ctx,v] = decNext(ctx, v)
-	[ctx,cid,vsz] = decTag(ctx);
-	n = prod(vsz, 'native');
+function [ctx,v] = decNext(ctx, buf, v)
+	[ctx,cid,vsz,n] = decTag(ctx, buf);
+	if ~isempty(ctx.err)
+		return;
+	end
 
 	% Interpreted code returns what is actually in the buffer
 	if ~ctx.cgen
 		switch cid2cls(cid)
 		case 'logical'
-			[ctx,v] = decLogical(ctx, v, n);
+			[ctx,v] = decLogical(ctx, buf, v, n);
 		case {'char8','char16'}
-			[ctx,v] = decChar(ctx, v, n, cid);
+			[ctx,v] = decChar(ctx, buf, v, n, cid);
 		case 'cell'
-			[ctx,v] = decCell(ctx, v, n);
+			[ctx,v] = decCell(ctx, buf, v, n);
 		case 'struct'
-			[ctx,v] = decStruct(ctx, v, n);
+			[ctx,v] = decStruct(ctx, buf, v, n);
 		case 'sparse'
-			[ctx,v] = decSparse(ctx, v, n);
+			[ctx,v] = decSparse(ctx, buf, v, n);
 		case 'complex'
-			[ctx,v] = decComplex(ctx, v, n);
-		case ''
+			[ctx,v] = decComplex(ctx, buf, v, n);
 		otherwise
-			[ctx,v] = decNumeric(ctx, v, n, cid);
+			[ctx,v] = decNumeric(ctx, buf, v, n, cid);
 		end
 		if isempty(ctx.err)
 			v = reshape(v, vsz);
@@ -193,25 +191,19 @@ function [ctx,v] = decNext(ctx, v)
 
 	% Standalone code uses v to guide the decoding process while verifying that
 	% the buffer contains a valid encoding of v.
-	if n > ubound(ctx)
-		ctx = fail(ctx, 'ubound');
-	end
-	if ~isempty(ctx.err)
-		return;
-	end
 	coder.varsize('tmp', [ubound(ctx),1], [true,false]);
 	if isnumeric(v) && isreal(v)
-		[ctx,tmp] = decNumeric(ctx, v, n, cid);
+		[ctx,tmp] = decNumeric(ctx, buf, v, n, cid);
 	elseif isnumeric(v) && ~isreal(v) && cid == cls2cid('complex')
-		[ctx,tmp] = decComplex(ctx, v, n);
+		[ctx,tmp] = decComplex(ctx, buf, v, n);
 	elseif islogical(v) && cid == cls2cid('logical')
-		[ctx,tmp] = decLogical(ctx, v, n);
+		[ctx,tmp] = decLogical(ctx, buf, v, n);
 	elseif ischar(v) && (cid == cls2cid('char8') || cid == cls2cid('char16'))
-		[ctx,tmp] = decChar(ctx, v, n, cid);
+		[ctx,tmp] = decChar(ctx, buf, v, n, cid);
 	elseif iscell(v) && cid == cls2cid('cell')
-		[ctx,tmp] = decCell(ctx, v, n);
+		[ctx,tmp] = decCell(ctx, buf, v, n);
 	elseif isstruct(v) && cid == cls2cid('struct')
-		[ctx,tmp] = decStruct(ctx, v, n);
+		[ctx,tmp] = decStruct(ctx, buf, v, n);
 	else
 		ctx = fail(ctx, 'classMismatch');
 		return;
@@ -235,12 +227,12 @@ function [ctx,v] = decNext(ctx, v)
 	end
 end
 
-function [ctx,v] = decNumeric(ctx, v, n, cid)
+function [ctx,v] = decNumeric(ctx, buf, v, n, cid)
 	[ctx,i,j] = consume(ctx, n*cid2bpe(cid));
 	if ~ctx.cgen
-		v = typecast(ctx.buf(i:j), cid2cls(cid));
+		v = typecast(buf(i:j), cid2cls(cid));
 	elseif cid == cls2cid(class(v))
-		v = typecast(ctx.buf(i:j), class(v));
+		v = typecast(buf(i:j), class(v));
 	else
 		ctx = fail(ctx, 'classMismatch');
 		v = reshape(v, numel(v), 1);
@@ -251,10 +243,10 @@ function [ctx,v] = decNumeric(ctx, v, n, cid)
 	end
 end
 
-function [ctx,v] = decComplex(ctx, v, n)
-	[ctx,cid,~] = decTag(ctx);
-	[ctx,re] = decNumeric(ctx, real(v(:)), n, cid);
-	[ctx,im] = decNumeric(ctx, imag(v(:)), n, cid);
+function [ctx,v] = decComplex(ctx, buf, v, n)
+	[ctx,cid,~,~] = decTag(ctx, buf);
+	[ctx,re] = decNumeric(ctx, buf, real(v(:)), n, cid);
+	[ctx,im] = decNumeric(ctx, buf, imag(v(:)), n, cid);
 	if numel(re) == numel(im)
 		v = complex(re, im);
 	else
@@ -263,25 +255,25 @@ function [ctx,v] = decComplex(ctx, v, n)
 	end
 end
 
-function [ctx,v] = decLogical(ctx, v, n)
+function [ctx,v] = decLogical(ctx, buf, v, n)
 	[ctx,i,j] = consume(ctx, n);
-	v = logical(ctx.buf(i:j));
+	v = logical(buf(i:j));
 end
 
-function [ctx,v] = decSparse(ctx, v, n)
-	[ctx,idx] = decNext(ctx, []);
-	[ctx,nze] = decNext(ctx, []);
+function [ctx,v] = decSparse(ctx, buf, v, n)
+	[ctx,idx] = decNext(ctx, buf, []);
+	[ctx,nze] = decNext(ctx, buf, []);
 	v = sparse(double(idx), 1, nze, double(n), 1);
 end
 
-function [ctx,v] = decChar(ctx, v, n, cid)
+function [ctx,v] = decChar(ctx, buf, v, n, cid)
 	if cid == cls2cid('char8')
 		[ctx,i,j] = consume(ctx, n);
-		v = char(ctx.buf(i:j));
+		v = char(buf(i:j));
 		v = reshape(v, numel(v), 1);
 	elseif ~ctx.cgen
 		u16 = zeros(0, 1, 'uint16');
-		[ctx,u16] = decNumeric(ctx, u16, n, cls2cid('uint16'));
+		[ctx,u16] = decNumeric(ctx, buf, u16, n, cls2cid('uint16'));
 		v = char(u16);
 	else
 		ctx = fail(ctx, 'unicodeChar');
@@ -289,36 +281,40 @@ function [ctx,v] = decChar(ctx, v, n, cid)
 	end
 end
 
-function [ctx,out] = decCell(ctx, v, n)
+function [ctx,v] = decCell(ctx, buf, v, n)
 	if ~ctx.cgen
 		e = [];
 	elseif isempty(v)
 		% At least one element is required to know the type of the cell
-		ctx = fail(ctx, 'emptyCell');
-		out = reshape(v, numel(v), 1);
+		ctx = fail(ctx, 'emptyV');
+		v = reshape(v, numel(v), 1);
 		return;
 	else
 		e = v{1};
 	end
-	out = cell(n, 1);
-	for i = 1:numel(out)
-		[ctx,out{i}] = decNext(ctx, e);
+	v = cell(n, 1);
+	for i = 1:numel(v)
+		[ctx,v{i}] = decNext(ctx, buf, e);
 	end
 end
 
-function [ctx,out] = decStruct(ctx, v, n)
+function [ctx,v] = decStruct(ctx, buf, v, n)
 	if ~ctx.cgen
-		[ctx,fields] = decNext(ctx, []);
+		[ctx,fields] = decNext(ctx, buf, []);
 		fieldvals = cell(1, 2*numel(fields));
 		fieldvals(1:2:numel(fieldvals)) = fields;
 		for i = 2:2:numel(fieldvals)
 			vals = cell(n, 1);
 			for j = 1:n
-				[ctx,vals{j}] = decNext(ctx, []);
+				[ctx,vals{j}] = decNext(ctx, buf, []);
 			end
 			fieldvals{i} = vals;
 		end
-		out = struct(fieldvals{:});
+		v = struct(fieldvals{:});
+		return;
+	elseif isempty(v)
+		ctx = fail(ctx, 'emptyV');
+		v = reshape(v, numel(v), 1);
 		return;
 	end
 
@@ -327,8 +323,10 @@ function [ctx,out] = decStruct(ctx, v, n)
 	bfields = {'';''};
 	coder.varsize('bfields', [ubound(ctx),1]);
 	coder.varsize('bfields{:}', [1,63]);  % namelengthmax
-	[ctx,bfields] = decNext(ctx, bfields);
-	out = repmat(v(1), n, 1);
+	[ctx,bfields] = decNext(ctx, buf, bfields);
+
+	e = v(1);
+	v = repmat(v(1), n, 1);
 	err = ~isempty(vfields);
 
 	% Decode data for matching fields, ignore struct fields that weren't
@@ -346,13 +344,13 @@ function [ctx,out] = decStruct(ctx, v, n)
 			match = true;
 			err = false;
 			for k = 1:n
-				[ctx,out(k).(vfields{j})] = decNext(ctx, v(1).(vfields{j}));
+				[ctx,v(k).(vfields{j})] = decNext(ctx, buf, e.(vfields{j}));
 			end
 			break;
 		end
 		if ~match
 			for k = 1:n
-				ctx = skip(ctx, []);
+				ctx = skip(ctx, buf, []);
 			end
 		end
 	end
@@ -361,9 +359,8 @@ function [ctx,out] = decStruct(ctx, v, n)
 	end
 end
 
-function [ctx,n] = skip(ctx, expect)
-	[ctx,cid,vsz] = decTag(ctx);
-	n = prod(vsz, 'native');
+function [ctx,n] = skip(ctx, buf, expect)
+	[ctx,cid,vsz,n] = decTag(ctx, buf);
 	if ~isempty(expect) && ~any(cid == expect)
 		ctx = fail(ctx, 'invalidBuf');
 		return;
@@ -376,95 +373,113 @@ function [ctx,n] = skip(ctx, expect)
 	switch cid
 	case cls2cid('cell')
 		for i = 1:n
-			ctx = skip(ctx, []);
+			ctx = skip(ctx, buf, []);
 		end
 	case cls2cid('struct')
-		[ctx,nf] = skip(ctx, cls2cid('cell'));
+		[ctx,nf] = skip(ctx, buf, cls2cid('cell'));
 		for i = 1:nf*n
-			ctx = skip(ctx, []);
+			ctx = skip(ctx, buf, []);
 		end
 	case cls2cid('sparse')
-		ctx = skip(ctx, [cls2cid('uint8'),cls2cid('uint16'),cls2cid('uint32')]);
-		ctx = skip(ctx, [cls2cid('double'),cls2cid('logical')]);
+		ctx = skip(ctx, buf, ...
+				[cls2cid('uint8'),cls2cid('uint16'),cls2cid('uint32')]);
+		ctx = skip(ctx, buf, [cls2cid('double'),cls2cid('logical')]);
 	case cls2cid('complex')
-		[ctx,cid,~] = decTag(ctx);
+		[ctx,cid,~,~] = decTag(ctx, buf);
 		ctx = consume(ctx, 2*n*cid2bpe(cid));
 	end
 end
 
-function [ctx,cid,vsz] = decTag(ctx)
+function [ctx,cid,vsz,n] = decTag(ctx, buf)
 	[ctx,i,~] = consume(ctx, int32(1));
-	cid = bitand(ctx.buf(i), 31);
-	fmt = bitshift(ctx.buf(i), -5);
+	cid = bitand(buf(i), 31);
+	fmt = bitshift(buf(i), -5);
 	if isempty(ctx.cgen) && ~coder.target('MATLAB')
 		coder.ceval('(void)', coder.ref(cid), coder.ref(fmt));
 	end
 	if cid < 1 || 17 < cid
 		ctx = fail(ctx, 'invalidTag');
 	end
+
+	% Decode size and calculate total number of elements
 	vsz = ones(1, 2, 'int32');
+	n = int32(1);
 	switch fmt
 	case 0
 	case {1,2}
 		[ctx,i,~] = consume(ctx, int32(1));
-		vsz(fmt) = ctx.buf(i);
+		vsz(fmt) = int32(buf(i));
+		n = int32(buf(i));
 	case 3
 		[ctx,i,~] = consume(ctx, int32(2));
-		vsz(:) = ctx.buf(i:i+1);
+		vsz(:) = int32(buf(i:i+1));
+		n = prod(vsz, 'native');
 	case 4
-		vsz(:) = 0;
+		vsz = zeros(1, 2, 'int32');
+		n = int32(0);
 	otherwise
 		[ctx,i,~] = consume(ctx, int32(1));
-		szn = int32(ctx.buf(i));
-		if isempty(ctx.cgen) && ~coder.target('MATLAB')
-			coder.ceval('(void)', coder.ref(szn));
-			coder.varsize('u16', 'u32', 'i32', [255,1]);
-		end
-		switch bitand(fmt, 3)
-		case 1
-			[ctx,i,j] = consume(ctx, szn);
-			i32 = int32(ctx.buf(i:j));
-		case 2
-			u16 = zeros(0, 1, 'uint16');
-			[ctx,u16] = decNumeric(ctx, u16, szn, cls2cid('uint16'));
-			i32 = int32(u16);
-		otherwise
-			u32 = zeros(0, 1, 'uint32');
-			[ctx,u32] = decNumeric(ctx, u32, szn, cls2cid('uint32'));
-			i32 = int32(u32);
-		end
-		if numel(i32) < 2
-			ctx = fail(ctx, 'invalidNdims');
+		szn = int32(buf(i));
+		if szn < 2
+			ctx = fail(ctx, 'invalidTag');
 		elseif ~ctx.cgen
-			vsz = i32';
-		else
-			vsz(1) = i32(1);
-			vsz(2) = prod(i32(2:end), 'native');
+			vsz = zeros(1, szn, 'int32');
+		elseif szn > 2
+			ctx = fail(ctx, 'ndimsLimit');
 		end
+		if isempty(ctx.err)
+			% Separate function removes malloc calls from all other code paths
+			[ctx,vsz,n] = decSize(ctx, buf, bitand(fmt, 3), vsz);
+		end
+	end
+	if n < 0 || size(ctx.ubound, 1) < n
+		ctx = fail(ctx, 'numelLimit');
 	end
 	if ~isempty(ctx.err)
 		cid = uint8(0);
 		vsz = zeros(1, 2, 'int32');
+		n = int32(0);
+	end
+end
+
+function [ctx,vsz,n] = decSize(ctx, buf, fmt, vsz)
+	if isempty(ctx.cgen) && ~coder.target('MATLAB')
+		coder.inline('never');
+		coder.varsize('u16', 'u32', [numel(vsz),1]);
+	end
+	switch fmt
+	case 1
+		[ctx,i,j] = consume(ctx, numel(vsz));
+		u32 = uint32(buf(i:j));
+	case 2
+		u16 = zeros(0, 1, 'uint16');
+		[ctx,u16] = decNumeric(ctx, buf, u16, numel(vsz), cls2cid('uint16'));
+		u32 = uint32(u16);
+	otherwise
+		u32 = zeros(0, 1, 'uint32');
+		[ctx,u32] = decNumeric(ctx, buf, u32, numel(vsz), cls2cid('uint32'));
+	end
+	p = prod(u32, 'native');
+	n = int32(-1);
+	if numel(vsz) == numel(u32) && p <= intmax && max(u32) <= intmax
+		vsz(:) = int32(u32);
+		n = int32(p);
 	end
 end
 
 function [ctx,i,j] = consume(ctx, n)
-	i = uint32(ctx.pos);
-	j = i + uint32(n) - 1;
-	if j < numel(ctx.buf)
-		if isempty(ctx.cgen) && ~coder.target('MATLAB')
-			coder.ceval('(void)', coder.ref(i), coder.ref(j));
-		end
-		ctx.pos = ctx.pos + n;
-	else
-		i = uint32(1);
-		j = uint32(0);
-		ctx = fail(ctx, 'invalidBuf');
+	i = ctx.pos;
+	ctx.pos = ctx.pos + n;
+	j = ctx.pos - 1;
+	if j >= ctx.len
+		i = int32(1);
+		j = int32(0);
+		ctx = fail(ctx, 'corruptBuf');  % TODO: Find other places to use this
 	end
 end
 
 function ub = ubound(ctx)
-	ub = double(size(ctx.ubound, 1));
+	ub = double(size(ctx.ubound,1));
 	if ub == intmax
 		ub = Inf;
 	end
@@ -472,18 +487,18 @@ end
 
 function ctx = fail(ctx, err, codegenErr)
 	if isempty(ctx.err)
-		ctx.pos = intmax;  % Required for consume to return 1:0
+		ctx.len = int32(0);
 		ctx.err = err;
 	end
 	switch err
 	case 'classMismatch'
 		msg = 'Encoding does not match expected class.';
-	case 'emptyCell'
-		msg = 'Cell does not contain any elements.';
+	case 'corruptBuf'
+		msg = 'Buffer is corrupt.';
+	case 'emptyV'
+		msg = 'Cell or struct does not contain any elements.';
 	case 'invalidBuf'
 		msg = 'Invalid buffer format.';
-	case 'invalidNdims'
-		msg = 'Invalid number of dimensions.';
 	case 'invalidPad'
 		msg = 'Invalid buffer padding.';
 	case 'invalidSig'
@@ -491,19 +506,18 @@ function ctx = fail(ctx, err, codegenErr)
 	case 'invalidStruct'
 		msg = 'Invalid struct or field name mismatch.';
 	case 'invalidTag'
-		msg = 'Tag specifies an unknown class.';
+		msg = 'Tag specifies an unknown class or invalid size.';
+	case 'ndimsLimit'
+		msg = 'Number of dimensions exceeds limit.';
+	case 'numelLimit'
+		msg = 'Number of elements exceeds limit.';
 	case 'sizeMismatch'
 		msg = 'Encoding does not match expected size.';
-	case 'ubound'
-		msg = 'Number of elements exceeds ubound.';
 	case 'unicodeChar'
 		msg = '16-bit characters are not supported.';
 	end
-	err = [mfilename ':' err];
-	if ~isempty(ctx.cgen) || (coder.target('MEX') && nargin < 3)
-		error(err, msg);
-	elseif nargin == 3
-		coder.inline(err);  % HACK: Generate errors during codegen execution
+	if ~isempty(ctx.cgen)
+		error([mfilename ':' err], msg);
 	end
 end
 

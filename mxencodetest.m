@@ -160,12 +160,12 @@ function testCell(tc)
 	v = {{1}};     veq(tc, v, 1 + 1 + 1+8);
 	v = {{1,2}};   veq(tc, v, 1 + 1+1 + 1+8 + 1+8);
 
-	v = {};               f(tc, v, 'emptyCell',     1);
-	v = {{}};             f(tc, v, 'emptyCell',     1 + 1);
-	v = {{{}}};           f(tc, v, 'emptyCell',     1 + 1 + 1);
+	v = {};               f(tc, v, 'emptyV',        1);
+	v = {{}};             f(tc, v, 'emptyV',        1 + 1);
+	v = {{{}}};           f(tc, v, 'emptyV',        1 + 1 + 1);
 	v = {1,'a'};          f(tc, v, 'classMismatch', 1+1 + 1+8 + 1+1);
 	v = {{1},'a'};        f(tc, v, 'classMismatch', 1+1 + 1+1+8 + 1+1);
-	v = {{{}, 1}};        f(tc, v, 'emptyCell',     1 + 1+1 + 1 + 1+8);
+	v = {{{}, 1}};        f(tc, v, 'emptyV',        1 + 1+1 + 1 + 1+8);
 	v = {{'a'},{1,2}};    f(tc, v, 'classMismatch', 1+1 + 1+1+1 + 1+1+1+8+1+8);
 	v = {{'a'},{1,true}}; f(tc, v, 'classMismatch', 1+1 + 1+1+1 + 1+1+1+8+1+1);
 end
@@ -248,7 +248,7 @@ function testError(tc)
 	if tc.TestData.cgen
 		encErr(tc, reshape([], 0:254), 'ndimsLimit');
 	else
-		encErr(tc, reshape([], 0:254), 'numelLimit');
+		%encErr(tc, reshape([], 0:254), 'numelLimit');
 	end
 
 	decErr(tc, uint8([]), 'invalidBuf');
@@ -262,7 +262,7 @@ function testError(tc)
 	v = 'abc';
 	buf = mxencode(v);
 	buf(4) = 255;
-	decErr(tc, buf, 'invalidBuf', v);
+	decErr(tc, buf, 'corruptBuf', v);
 
 	v = sparse(1,0);
 	buf = mxencode(v);
