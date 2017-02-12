@@ -181,11 +181,7 @@ function [ctx,v] = decNext(ctx, buf, v)
 		otherwise
 			[ctx,v] = decNumeric(ctx, buf, v, n, cid);
 		end
-		if isempty(ctx.err)
-			v = reshape(v, vsz);
-		else
-			v = [];
-		end
+		v = reshape(v, vsz);
 		return;
 	end
 
@@ -274,7 +270,7 @@ function [ctx,out] = decComplex(ctx, buf, v, n)
 	if numel(re) == numel(im)
 		out = complex(re, im);
 	else
-		ctx = fail(ctx, 'sizeMismatch');
+		ctx = fail(ctx, 'corruptBuf');
 		out = reshape(v, numel(v), 1);
 	end
 end
@@ -318,7 +314,7 @@ function [ctx,out] = decCell(ctx, buf, v, n)
 	else
 		coder.varsize('out', [ubound(ctx,2),1]);
 		if isempty(v)
-			ctx = fail(ctx, 'emptyV');
+			ctx = fail(ctx, 'emptyValue');
 			out = reshape(v, numel(v), 1);
 			return;
 		end
@@ -350,7 +346,7 @@ function [ctx,out] = decStruct(ctx, buf, v, n)
 	coder.varsize('out', 'bfn', [ubound(ctx,2),1]);
 	coder.varsize('bfn{:}', [1,ubound(ctx,2)]);
 	if isempty(v)
-		ctx = fail(ctx, 'emptyV');
+		ctx = fail(ctx, 'emptyValue');
 		out = reshape(v, numel(v), 1);
 		return;
 	end
@@ -391,7 +387,7 @@ end
 function [ctx,n] = skip(ctx, buf, expect)
 	[ctx,cid,vsz,n] = decTag(ctx, buf);
 	if ~isempty(expect) && all(cid ~= expect)
-		ctx = fail(ctx, 'invalidBuf');
+		ctx = fail(ctx, 'corruptBuf');
 		return;
 	end
 	bpe = cid2bpe(cid);
@@ -501,7 +497,7 @@ function [ctx,i,j] = consume(ctx, n)
 	if j >= ctx.len
 		i = int32(1);
 		j = int32(0);
-		ctx = fail(ctx, 'corruptBuf');  % TODO: Find other places to use this
+		ctx = fail(ctx, 'corruptBuf');
 	end
 end
 
@@ -522,7 +518,7 @@ function ctx = fail(ctx, err)
 		msg = 'Encoding does not match expected class.';
 	case 'corruptBuf'
 		msg = 'Buffer is corrupt.';
-	case 'emptyV'
+	case 'emptyValue'
 		msg = 'Cell or struct does not contain any elements.';
 	case 'invalidBuf'
 		msg = 'Invalid buffer format.';
@@ -543,7 +539,7 @@ function ctx = fail(ctx, err)
 	case 'unicodeChar'
 		msg = '16-bit characters are not supported.';
 	end
-	if ~isempty(ctx.cgen)
+	if ~isempty(ctx.cgen) || coder.target('MEX')
 		error([mfilename ':' err], msg);
 	end
 end
