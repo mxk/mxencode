@@ -4,22 +4,25 @@
 %
 %   V = MXDECODE(BUF,SIG) uses the specified SIG to validate buffer signature.
 %     If SIG is not the same value that was provided to MXENCODE, decoding fails
-%     with 'mxdecode:invalidSig' error.
+%     with 'invalidSig' error.
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V) activates standalone mode for generating C/C++
 %     code with MATLAB Coder. If an error is encountered during decoding, ERR
 %     will contain its message id (just the mnemonic) and V may be partially
-%     modified. The same V must be used for input and output. An error is
+%     modified. The same V should be used for input and output. An error is
 %     returned if BUF does not contain a valid encoding of V. In other words, V
 %     specifies the required BUF format and BUF provides the data.
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V,UBOUND) uses UBOUND as the upper bound on the
-%     number of elements, struct fields, and field name length for any value in
-%     BUF. This allows Coder to generate more efficient code. Decoding fails
-%     with 'numelLimit' error if BUF or V violate this limit. You must use the
-%     same UBOUND for all MXDECODE calls within the same program or you'll get
-%     the following error: "The name 'MxDecCtx' has already been defined using a
-%     different type." The default is Inf.
+%     number of elements, struct fields, and field name lengths for any value in
+%     BUF. This allows Coder to generate more efficient code. If UBOUND is a 1x2
+%     vector, the first bound applies to all numeric and logical data, and the
+%     second to char arrays, cells, and structs. If UBOUND is a scalar, the same
+%     bound is used for both categories. Decoding fails with 'numelLimit' error
+%     if BUF or V violate this limit. You must use the same constant UBOUND for
+%     all MXDECODE calls within the same program or you'll get the following
+%     error: "The name 'MxDecCtx' has already been defined using a different
+%     type." The default is [4096,128].
 %
 %   The paragraphs below apply only to standalone mode:
 %
@@ -29,7 +32,8 @@
 %   All non-scalar values in V, including V itself, must be declared as
 %   variable-size using CODER.VARSIZE. Scalar values must not be declared as
 %   such. You may specify an explicit upper bound for varying dimensions, but
-%   you may not use the dims argument to CODER.VARSIZE and you may not modify V
+%   the decoder cannot enforce it if it's smaller than the UBOUND argument. You
+%   may not use the dims argument to CODER.VARSIZE and you may not modify V
 %   between CODER.VARSIZE declarations and the call to MXDECODE. In general,
 %   your program should have the following structure:
 %
@@ -96,15 +100,19 @@ function [v,err] = mxdecode(buf, sig, v, ubound)  %#codegen
 		narginchk(1, 2);
 		v = [];
 	end
-	if nargin < 4
-		ubound = intmax;
+	if nargin < 4 || isempty(ubound) || numel(ubound) > 2
+		ub = [4096,128];
+	elseif isscalar(ubound)
+		ub = [ubound(1),ubound(1)];
+	else
+		ub = reshape(ubound, 1, 2);
 	end
 	ctx = struct( ...
 		'pos',    int32(3), ...
 		'len',    int32(0), ...
 		'swap',   false, ...
-		'cgen',   false(int32(~cgen)), ...      % Empty is compile-time true
-		'ubound', zeros(int32(ubound), 0), ...  % Size is compile-time constant
+		'cgen',   false(int32(~cgen)), ...   % Empty is compile-time true
+		'ubound', zeros(int32([ub,0])), ...  % Size is compile-time constant
 		'err',    '' ...
 	);
 	if cgen
@@ -181,13 +189,15 @@ function [ctx,v] = decNext(ctx, buf, v)
 		return;
 	end
 
-	% Standalone code uses v to guide the decoding process while verifying that
-	% the buffer contains a valid encoding of v.
-	if numel(v) > size(ctx.ubound, 1)
+	% Check ubound. We must be able to assign v to out without overflow.
+	ub = size(ctx.ubound, 2 - int32(isnumeric(v) || islogical(v)));
+	if n > ub || numel(v) > ub
 		ctx = fail(ctx, 'numelLimit');
 		return;
 	end
-	coder.varsize('out', [ubound(ctx),1]);
+
+	% Standalone code uses v to guide the decoding process while verifying that
+	% the buffer contains a valid encoding of v.
 	if isnumeric(v) && isreal(v)
 		[ctx,out] = decNumeric(ctx, buf, v, n, cid);
 	elseif isnumeric(v) && ~isreal(v) && cid == cls2cid('complex')
@@ -234,14 +244,14 @@ function [ctx,out] = decNumeric(ctx, buf, v, n, cid)
 		end
 		return;
 	end
-	coder.varsize('out', [ubound(ctx),1]);
+	coder.varsize('out', [ubound(ctx,1),1]);
 	if cid == cls2cid(class(v))
 		bpe = cid2bpe(cls2cid(class(v)));
 		[ctx,i,j] = consume(ctx, n*bpe);
 		if isa(v, 'uint8')
 			out = buf(i:j);
 		else
-			coder.varsize('dat', [ubound(ctx)*bpe,1]);
+			coder.varsize('dat', [ubound(ctx,1)*bpe,1]);
 			dat = buf(i:j);
 			out = typecast(dat, class(v));
 			if ctx.swap
@@ -256,7 +266,7 @@ end
 
 function [ctx,out] = decComplex(ctx, buf, v, n)
 	if isempty(ctx.cgen)
-		coder.varsize('out', 're', 'im', [ubound(ctx),1]);
+		coder.varsize('out', 're', 'im', [ubound(ctx,1),1]);
 	end
 	[ctx,cid,~,~] = decTag(ctx, buf);
 	[ctx,re] = decNumeric(ctx, buf, real(v(:)), n, cid);
@@ -271,7 +281,7 @@ end
 
 function [ctx,out] = decLogical(ctx, buf, v, n)
 	if isempty(ctx.cgen)
-		coder.varsize('out', 'dat', [ubound(ctx),1]);
+		coder.varsize('out', 'dat', [ubound(ctx,1),1]);
 	end
 	[ctx,i,j] = consume(ctx, n);
 	dat = buf(i:j);
@@ -286,7 +296,7 @@ end
 
 function [ctx,out] = decChar(ctx, buf, v, n, cid)
 	if isempty(ctx.cgen)
-		coder.varsize('out', 'dat', [ubound(ctx),1]);
+		coder.varsize('out', 'dat', [ubound(ctx,2),1]);
 	end
 	if cid == cls2cid('char8')
 		[ctx,i,j] = consume(ctx, n);
@@ -306,7 +316,7 @@ function [ctx,out] = decCell(ctx, buf, v, n)
 	if ~ctx.cgen
 		v = {[]};
 	else
-		coder.varsize('out', [ubound(ctx),1]);
+		coder.varsize('out', [ubound(ctx,2),1]);
 		if isempty(v)
 			ctx = fail(ctx, 'emptyV');
 			out = reshape(v, numel(v), 1);
@@ -336,10 +346,9 @@ function [ctx,out] = decStruct(ctx, buf, v, n)
 	end
 
 	% Ideally, bfn{:} should be limited to namelengthmax (63), but the decoder
-	% can't enforce two separate limits. If ubound(ctx) > 63, then there is a
-	% potential for field name buffer overflow.
-	coder.varsize('out', 'bfn', [ubound(ctx),1]);
-	coder.varsize('bfn{:}', [1,ubound(ctx)]);
+	% can't enforce two separate limits for char arrays.
+	coder.varsize('out', 'bfn', [ubound(ctx,2),1]);
+	coder.varsize('bfn{:}', [1,ubound(ctx,2)]);
 	if isempty(v)
 		ctx = fail(ctx, 'emptyV');
 		out = reshape(v, numel(v), 1);
@@ -348,7 +357,7 @@ function [ctx,out] = decStruct(ctx, buf, v, n)
 
 	% Decode data for matching fields, ignore v fields that weren't encoded,
 	% skip encoded fields that aren't in v. At least one field must match, but
-	% order may be different.
+	% the order may be different.
 	out = repmat(v(1), n, 1);
 	vfn = fieldnames(v);
 	bfn = {'';''};
@@ -451,9 +460,6 @@ function [ctx,cid,vsz,n] = decTag(ctx, buf)
 			[ctx,vsz,n] = decSize(ctx, buf, bitand(fmt, 3), vsz);
 		end
 	end
-	if n < 0 || size(ctx.ubound, 1) < n
-		ctx = fail(ctx, 'numelLimit');
-	end
 	if ~isempty(ctx.err)
 		cid = uint8(0);
 		vsz = zeros(1, 2, 'int32');
@@ -462,27 +468,29 @@ function [ctx,cid,vsz,n] = decTag(ctx, buf)
 end
 
 function [ctx,vsz,n] = decSize(ctx, buf, fmt, vsz)
+	szn = int32(numel(vsz));
 	if isempty(ctx.cgen)
 		coder.inline('never');
-		coder.varsize('u16', 'u32', [numel(vsz),1]);
+		coder.varsize('u16', 'u32', [szn,1]);
 	end
 	switch fmt
 	case 1
-		[ctx,i,j] = consume(ctx, numel(vsz));
+		[ctx,i,j] = consume(ctx, szn);
 		u32 = uint32(buf(i:j));
 	case 2
 		u16 = zeros(0, 1, 'uint16');
-		[ctx,u16] = decNumeric(ctx, buf, u16, numel(vsz), cls2cid('uint16'));
+		[ctx,u16] = decNumeric(ctx, buf, u16, szn, cls2cid('uint16'));
 		u32 = uint32(u16);
 	otherwise
 		u32 = zeros(0, 1, 'uint32');
-		[ctx,u32] = decNumeric(ctx, buf, u32, numel(vsz), cls2cid('uint32'));
+		[ctx,u32] = decNumeric(ctx, buf, u32, szn, cls2cid('uint32'));
 	end
 	p = prod(u32, 'native');
-	n = int32(-1);
+	n = int32(p);
 	if numel(vsz) == numel(u32) && p <= intmax && max(u32) <= intmax
 		vsz(:) = int32(u32);
-		n = int32(p);
+	else
+		ctx = fail(ctx, 'numelLimit');
 	end
 end
 
@@ -497,8 +505,8 @@ function [ctx,i,j] = consume(ctx, n)
 	end
 end
 
-function ub = ubound(ctx)
-	ub = double(size(ctx.ubound,1));
+function ub = ubound(ctx,i)
+	ub = double(size(ctx.ubound,i));
 	if ub == intmax
 		ub = Inf;
 	end

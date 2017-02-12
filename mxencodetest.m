@@ -26,6 +26,7 @@ function setup(tc)
 	tc.TestData.cgen = false;
 	tc.TestData.sig = [];
 	tc.TestData.byteOrder = '';
+	tc.TestData.ubound = Inf;
 end
 
 function testEmpty(tc)
@@ -321,7 +322,7 @@ function veq(tc, v, len)
 			[m,n] = size(v);
 			v = reshape(v, m, n);
 		end
-		[out,err] = mxdecode(buf, tc.TestData.sig, v);
+		[out,err] = mxdecode(buf, tc.TestData.sig, v, tc.TestData.ubound);
 		tc.verifyEqual(out, v);
 		tc.verifyEmpty(err);
 	else
@@ -345,7 +346,7 @@ function decErr(tc, buf, errid, v)
 		if nargin < 4
 			v = [];
 		end
-		[v,err] = mxdecode(buf, tc.TestData.sig, v);
+		[v,err] = mxdecode(buf, tc.TestData.sig, v, tc.TestData.ubound);
 		tc.verifyEqual(err, errid);
 	else
 		tc.verifyError(@() mxdecode(buf, tc.TestData.sig), ['mxdecode:' errid]);
