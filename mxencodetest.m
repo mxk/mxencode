@@ -1,4 +1,5 @@
 %MXENCODETEST   Unit tests for MXENCODE/MXDECODE functions.
+%
 %   RESULT = RUNTESTS('mxencodetest') runs all unit tests.
 %
 %   MXENCODETEST(true) runs all unit tests and generates code coverage report.

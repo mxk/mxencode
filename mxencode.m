@@ -16,9 +16,13 @@
 %
 %   [BUF,ERR] = MXENCODE(V,SIG,BYTEORDER) activates standalone mode for
 %     generating C/C++ code with MATLAB Coder. SIG and BYTEORDER arguments may
-%     be omitted. If an error is encountered during encoding, ERR will contain
-%     its message id (just the mnemonic) and BUF will be empty. Compiled MEX
-%     functions will still throw errors for testing purposes.
+%     be omitted. If there are multiple MXENCODE calls within the same program,
+%     they must all either specify the BYTEORDER or use the default value.
+%     Mixing the two will result in the following error: "The name 'MxEncCtx'
+%     has already been defined using a different type." If an error is
+%     encountered during encoding, ERR will contain its message id (just the
+%     mnemonic) and BUF will be empty. Compiled MEX functions will still throw
+%     errors for testing purposes.
 %
 %   MXENCODE and MXDECODE were designed for use with MATLAB Coder to provide an
 %   efficient data exchange format between MATLAB and non-MATLAB code. Multiple
@@ -169,15 +173,13 @@ function [ctx,buf] = encSparse(ctx, buf, v)
 	[ctx,buf] = encTag(ctx, buf, v, 'sparse');
 	idx = find(v);
 	if isempty(idx)
-		idx = reshape(idx, 0, 0);
-		cid = uint8(1);
+		[ctx,buf] = encNumeric(ctx, buf, uint8([]));
 	else
-		cid = minUint(idx(end));
-	end
-	switch cid
-	case 1; [ctx,buf] = encNumeric(ctx, buf, uint8(idx));
-	case 2; [ctx,buf] = encNumeric(ctx, buf, uint16(idx));
-	case 3; [ctx,buf] = encNumeric(ctx, buf, uint32(idx));
+		switch minUint(idx(end))
+		case 1; [ctx,buf] = encNumeric(ctx, buf, uint8(idx));
+		case 2; [ctx,buf] = encNumeric(ctx, buf, uint16(idx));
+		case 3; [ctx,buf] = encNumeric(ctx, buf, uint32(idx));
+		end
 	end
 	[ctx,buf] = encAny(ctx, buf, full(v(idx)));  % Double or logical
 end
@@ -203,13 +205,14 @@ function [ctx,buf] = encStruct(ctx, buf, v)
 	[ctx,buf] = encTag(ctx, buf, v, 'struct');
 	fields = fieldnames(v);
 	if isempty(fields)
-		fields = reshape(fields, 0, 0);
-	end
-	[ctx,buf] = encCell(ctx, buf, fields);
-	for i = 1:numel(fields)
-		for j = 1:numel(v)
-			% Coder requires fields{i} to be used directly
-			[ctx,buf] = encAny(ctx, buf, v(j).(fields{i}));
+		[ctx,buf] = encCell(ctx, buf, {});
+	else
+		[ctx,buf] = encCell(ctx, buf, fields);
+		for i = 1:numel(fields)
+			for j = 1:numel(v)
+				% Coder requires fields{i} to be used directly
+				[ctx,buf] = encAny(ctx, buf, v(j).(fields{i}));
+			end
 		end
 	end
 end
