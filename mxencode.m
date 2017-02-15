@@ -266,7 +266,7 @@ function [ctx,buf] = appendBytes(ctx, buf, bytes)
 		ctx = fail(ctx, 'bufLimit');
 	elseif ~isempty(ctx.cgen) || coder.target('MATLAB')
 		buf(i:j) = bytes;
-	else
+	elseif ~isempty(bytes)
 		if buf(1) == buf(2)
 			% First append to pre-allocated buf
 			i = int32(1);
