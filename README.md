@@ -12,3 +12,5 @@ data exchange between MATLAB and non-MATLAB components. See `mxcgentest.m` and
 
 Run `help mxencode` and `help mxdecode` in MATLAB for more info (or read the top
 comment in each file).
+
+Conversion to standalone code requires MATLAB R2016b or later.

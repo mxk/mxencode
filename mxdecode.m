@@ -7,11 +7,12 @@
 %     with 'invalidSig' error.
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V) activates standalone mode for generating C/C++
-%     code with MATLAB Coder. If an error is encountered during decoding, ERR
-%     will contain its message id (just the mnemonic) and V may be partially
-%     modified. The same V should be used for input and output. An error is
-%     returned if BUF does not contain a valid encoding of V. In other words, V
-%     specifies the required BUF format and BUF provides the data.
+%     code with MATLAB Coder (requires R2016b+). If an error is encountered
+%     during decoding, ERR will contain its message id (just the mnemonic) and V
+%     may be partially modified. The same V should be used for input and output.
+%     An error is returned if BUF does not contain a valid encoding of V. In
+%     other words, V specifies the required BUF format and BUF provides the
+%     data.
 %
 %   [V,ERR] = MXDECODE(BUF,SIG,V,UBOUND) uses UBOUND as the upper bound on the
 %     number of elements, struct fields, and field name lengths for any value in

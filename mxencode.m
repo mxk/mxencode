@@ -15,14 +15,14 @@
 %     little-endian, respectively. The default is native.
 %
 %   [BUF,ERR] = MXENCODE(V,SIG,BYTEORDER) activates standalone mode for
-%     generating C/C++ code with MATLAB Coder. SIG and BYTEORDER arguments may
-%     be omitted. If there are multiple MXENCODE calls within the same program,
-%     they must all either specify the BYTEORDER or use the default value.
-%     Mixing the two will result in the following error: "The name 'MxEncCtx'
-%     has already been defined using a different type." If an error is
-%     encountered during encoding, ERR will contain its message id (just the
-%     mnemonic) and BUF will be empty. Compiled MEX functions will still throw
-%     errors for testing purposes.
+%     generating C/C++ code with MATLAB Coder (requires R2016b+). SIG and
+%     BYTEORDER arguments may be omitted. If there are multiple MXENCODE calls
+%     within the same program, they must all either specify the BYTEORDER or use
+%     the default value. Mixing the two will result in the following error: "The
+%     name 'MxEncCtx' has already been defined using a different type." If an
+%     error is encountered during encoding, ERR will contain its message id
+%     (just the mnemonic) and BUF will be empty. Compiled MEX functions will
+%     still throw errors for testing purposes.
 %
 %   MXENCODE and MXDECODE were designed for use with MATLAB Coder to provide an
 %   efficient data exchange format between MATLAB and non-MATLAB code. Multiple
